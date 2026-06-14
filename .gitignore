@@ -5,3 +5,7 @@ node_modules/
 dist/
 # Letta session memory files (contain local state and potentially sensitive info)
 .letta/
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
