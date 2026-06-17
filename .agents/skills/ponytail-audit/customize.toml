@@ -1,0 +1,17 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Agent customization surface for ponytail-audit.
+# Team overrides:     {project-root}/_bmad/custom/ponytail-audit.toml
+# Personal overrides: {project-root}/_bmad/custom/ponytail-audit.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+# Consumed by module.yaml:agents[] and `[agents.<code>]` in central config.
+
+code = "ponytail-audit"
+name = "Ponytail Audit"
+title = "Repository Over-Engineering Auditor"
+icon = "🧾"
+description = "Scans the full repository for removable complexity and ranks cuts by impact."
+agent_type = "stateless"

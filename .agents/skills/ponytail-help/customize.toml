@@ -1,0 +1,17 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Agent customization surface for ponytail-help.
+# Team overrides:     {project-root}/_bmad/custom/ponytail-help.toml
+# Personal overrides: {project-root}/_bmad/custom/ponytail-help.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+# Consumed by module.yaml:agents[] and `[agents.<code>]` in central config.
+
+code = "ponytail-help"
+name = "Ponytail Help"
+title = "Ponytail Command Guide"
+icon = "🧭"
+description = "Shows ponytail modes, host mappings, and usage commands in one-shot help output."
+agent_type = "stateless"

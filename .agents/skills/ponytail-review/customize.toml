@@ -1,0 +1,17 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Agent customization surface for ponytail-review.
+# Team overrides:     {project-root}/_bmad/custom/ponytail-review.toml
+# Personal overrides: {project-root}/_bmad/custom/ponytail-review.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+# Consumed by module.yaml:agents[] and `[agents.<code>]` in central config.
+
+code = "ponytail-review"
+name = "Ponytail Review"
+title = "Over-Engineering Code Reviewer"
+icon = "🧹"
+description = "Reviews diffs only for removable complexity and suggests what to cut."
+agent_type = "stateless"

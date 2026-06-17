@@ -1,0 +1,17 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Agent customization surface for ponytail-debt.
+# Team overrides:     {project-root}/_bmad/custom/ponytail-debt.toml
+# Personal overrides: {project-root}/_bmad/custom/ponytail-debt.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+# Consumed by module.yaml:agents[] and `[agents.<code>]` in central config.
+
+code = "ponytail-debt"
+name = "Ponytail Debt"
+title = "Ponytail Debt Ledger Auditor"
+icon = "📒"
+description = "Collects all ponytail markers into a repo-wide debt ledger report."
+agent_type = "stateless"
