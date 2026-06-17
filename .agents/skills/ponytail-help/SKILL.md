@@ -87,6 +87,16 @@ Example config:
 
 Set off to disable auto-activation at session start and enable only when requested.
 
+Example (environment variable):
+```bash
+export PONYTAIL_DEFAULT_MODE=off
+```
+
+Example (config file):
+```json
+{ "defaultMode": "off" }
+```
+
 ## Update
 
 If your host supports plugin marketplace updates, use its native update flow.
