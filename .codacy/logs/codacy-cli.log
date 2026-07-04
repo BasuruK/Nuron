@@ -1,0 +1,9 @@
+2026-06-19T20:51:36+05:30 [INFO] (codacy-cli-v2/cli-v2.go:27) Starting Codacy CLI version=1.0.0-main.380.sha.27e119a (27e119a) built at 2026-06-11T09:54:47Z
+2026-06-19T20:51:36+05:30 [INFO] (codacy-cli-v2/cmd/root.go:34) Executing CLI command full_command=[/Users/basuruk/Library/Caches/Codacy/codacy-cli-v2/1.0.0-main.380.sha.27e119a/codacy-cli-v2 init --provider gh --organization BasuruK --repository Nuron --api-token ***] args=[] command=init
+2026/06/19 20:51:37 failed to get repository tools: request to https://app.codacy.com/api/v3/analysis/organizations/gh/BasuruK/repositories/Nuron/tools failed with status 404
+2026-06-19T20:52:22+05:30 [INFO] (codacy-cli-v2/cli-v2.go:27) Starting Codacy CLI version=1.0.0-main.380.sha.27e119a (27e119a) built at 2026-06-11T09:54:47Z
+2026-06-19T20:52:22+05:30 [INFO] (codacy-cli-v2/cmd/root.go:34) Executing CLI command command=init full_command=[/Users/basuruk/Library/Caches/Codacy/codacy-cli-v2/1.0.0-main.380.sha.27e119a/codacy-cli-v2 init --provider gh --organization BasuruK --repository Nuron --api-token ***] args=[]
+2026/06/19 20:52:23 failed to get repository tools: request to https://app.codacy.com/api/v3/analysis/organizations/gh/BasuruK/repositories/Nuron/tools failed with status 404
+2026-06-19T20:53:09+05:30 [INFO] (codacy-cli-v2/cli-v2.go:27) Starting Codacy CLI version=1.0.0-main.380.sha.27e119a (27e119a) built at 2026-06-11T09:54:47Z
+2026-06-19T20:53:09+05:30 [INFO] (codacy-cli-v2/cmd/root.go:34) Executing CLI command command=init full_command=[/Users/basuruk/Library/Caches/Codacy/codacy-cli-v2/1.0.0-main.380.sha.27e119a/codacy-cli-v2 init --provider gh --organization BasuruK --repository Nuron --api-token ***] args=[]
+2026/06/19 20:53:10 failed to get repository tools: request to https://app.codacy.com/api/v3/analysis/organizations/gh/BasuruK/repositories/Nuron/tools failed with status 404
