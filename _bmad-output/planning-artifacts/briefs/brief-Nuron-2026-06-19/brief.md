@@ -2,7 +2,7 @@
 title: "Nuron — Product Brief"
 status: draft
 created: 2026-06-19
-updated: 2026-06-19
+updated: 2026-07-05
 project: Nuron
 author: Basuruk
 facilitator: bmad-product-brief
@@ -14,7 +14,7 @@ facilitator: bmad-product-brief
 
 Nuron is a **self-hosted company brain** — an agentic system that ingests the scattered textual record of how an organisation actually works (notes, decisions, conversations, process documents) and turns it into a continuously-evolving graph of decisions, their lineage, and the evidence behind them. Its distinguishing claim is not better RAG. It is **institutional continuity**: when a person who carried twenty years of decisions in their head leaves the office, the next person can start where they stopped, not from zero.
 
-The v1 product is a single-tenant, self-hosted application that exposes an API + auth surface, with a Laravel + ShadCN presentation layer as one possible client. The system ingests Markdown files in v1 and produces a queryable Graph RAG over a property graph (Neo4j), fronted by a LangGraph-compiled default agent that listens for events and takes one action per request — ingest raw content into the compiled LLM-Wiki form, or reply from the graph. Customers can spawn additional agents from templates we ship; freeform agent authoring is explicitly out of v1 scope.
+The v1 product is a single-tenant, self-hosted application that exposes an API + auth surface, with a **Svelte** presentation layer (built on a ShadCN-style primitives library — see "Frontend Stack Decision" below) as one possible client. The system ingests Markdown files in v1 and produces a queryable Graph RAG over a property graph (Neo4j), fronted by a LangGraph-compiled default agent that listens for events and takes one action per request — ingest raw content into the compiled LLM-Wiki form, or reply from the graph. Customers can spawn additional agents from templates we ship; freeform agent authoring is explicitly out of v1 scope.
 
 A managed, multi-tenant Nuron-as-a-service is a v2 possibility. v1 includes the architectural primitives (tenant scoping, isolated data directories) so v2 does not require a rewrite.
 
@@ -40,7 +40,7 @@ The runtime query path is a separate, fast synchronous agent: a question arrives
 
 The default agent is Nuron-maintained and ships with the product. Customers can spawn additional agents from templates we ship — for example, an "Onboarding Q&A" agent that scopes its answers to a subset of the graph, or a "Decision lineage reporter" agent that emits supersession chains on demand. **Customers cannot author agents freely in v1** — that is a deliberate boundary.
 
-A minimal Laravel + ShadCN presentation layer ships with v1 so an admin can connect sources, view the graph, and configure agents without building a frontend. Customers are explicitly invited to replace it: Nuron's contract is its API and auth surface, not its UI.
+A minimal **Svelte** presentation layer (ShadCN-style primitives — see "Frontend Stack Decision" below) ships with v1 so an admin can connect sources, view the graph, and configure agents without building a frontend. Customers are explicitly invited to replace it: Nuron's contract is its API and auth surface, not its UI.
 
 ## What Makes This Different
 
@@ -93,7 +93,7 @@ A non-quantitative success signal we will watch for in the first design-partner 
 - One Nuron-maintained default agent that handles ingest and reply actions. Asynchronous, RabbitMQ-driven, one action per request.
 - User-configured agents created from Nuron-supplied templates. Admin UI to enable / disable / scope templates.
 - Curator agent that re-curates only touched subtrees.
-- Laravel + ShadCN presentation layer with the minimum functionality: source setup, agent setup, MCP-style connection configuration, graph view, query UI.
+- Svelte presentation layer (Bits UI or shadcn-svelte — see "Frontend Stack Decision") with the minimum functionality: source setup, agent setup, MCP-style connection configuration, graph view, query UI.
 - REST API + SSE streaming responses. API-first; frontend is replaceable.
 - Audit log: every response traceable to a node, every node traceable to evidence.
 
@@ -108,7 +108,7 @@ A non-quantitative success signal we will watch for in the first design-partner 
 
 ### Boundary clarifications
 
-- **Frontend is not the product.** Laravel + ShadCN is shipped as a convenience and a reference implementation. The contract is the API and auth surface.
+- **Frontend is not the product.** Svelte + a ShadCN-style primitives library (Bits UI or shadcn-svelte — see "Frontend Stack Decision" below) is shipped as a convenience and a reference implementation. The contract is the API and auth surface.
 - **The pipeline is the spine, Markdown is the proof.** v1 proves the ingest → compile → graph → query loop. The product value (the company brain) emerges fully when v1.1 connectors feed real source systems. The brief treats these as separable: the pipeline can ship and be validated against Markdown seed data before any connector work is needed.
 
 ## Vision
@@ -122,6 +122,53 @@ The v2 business possibility — a managed multi-tenant Nuron we operate — exis
 
 ---
 
+## Frontend Stack Decision
+
+The frontend stack was previously committed as **Laravel + ShadCN**. It is being re-evaluated in favor of **Svelte** for the v1 presentation layer, with the ShadCN-style primitives layer still **Open** between two Svelte-ecosystem candidates: **Bits UI** and **shadcn-svelte**. This section captures the comparison at brief-finalize time so downstream phases (PRD, Architecture) can make a binding choice with full context.
+
+### Why Svelte (over Laravel)
+
+The Laravel + ShadCN choice was conservative: PHP server-rendered, ShadCN's React ecosystem is the most familiar, and Laravel gives us batteries-included auth and admin scaffolding. It is being replaced because:
+
+- **API-first posture.** The brief already commits that the contract is the API and auth surface, not the UI. A server-rendered PHP frontend owns the routing and the templates; that's the wrong seam for an API-first product. Svelte (paired with SvelteKit) keeps the frontend as a thin client over the API, which is the same shape as any replacement customer frontend would have.
+- **Component portability.** Svelte components are closer to "annotated HTML" than to a framework abstraction. Customers who want to replace the reference UI can lift individual Svelte components wholesale.
+- **Build / ship ergonomics.** SvelteKit produces a static or SSR SPA with first-class server endpoints. Laravel's value (auth, ORM, queue) is redundant with the backend services already required by v1.
+- **Lower concept count.** Svelte 5 runes + a primitives library is a smaller surface area than Laravel + Blade + Inertia + a React-style component model.
+
+### Candidates under comparison
+
+Both candidates are Svelte-native and aim to give us the same outcome as the original Laravel + ShadCN choice — accessible, themeable, copy-paste-able component primitives built on Tailwind CSS — but they differ significantly in *how much they own*.
+
+| Dimension | Bits UI | shadcn-svelte |
+|---|---|---|
+| **What it is** | Headless primitives library (the Svelte port of Radix Bits). Ships unstyled, fully accessible component logic. | Styled component library that *is* the Svelte port of ShadCN. Ships Tailwind-styled components, copied into your repo. |
+| **Style ownership** | You bring the styles (Tailwind, Skeleton, plain CSS). Bits UI owns behavior, a11y, keyboard nav, focus management. | shadcn-svelte owns styles + behavior; you customize via `tailwind.config` and `components.json`. |
+| **A11y posture** | First-class (it's the entire reason Bits UI exists). ARIA, focus traps, roving tabindex, etc., are tested. | Good, but inherits whatever Bits UI / Melt UI it composes from under the hood. |
+| **Theming** | Bring your own design system. Maximum flexibility, maximum work. | ShadCN theming model out of the box (CSS variables, `hsl(var(--...))`). Fastest path to a coherent look. |
+| **Bundle / vendor lock-in** | Tiny runtime. No copy-pasted components in your repo — you depend on the package. | Components are copied into your repo. You own them, you maintain them, you can rewrite any of them. |
+| **Release cadence / maturity** | Younger in the Svelte ecosystem. Tracks Bits (Radix) closely. | Mature, large community, well-documented, active. |
+| **Fit with "frontend is not the product"** | Lower switching cost to a different primitives lib later (you control styling). | Higher up-front velocity, but every styled component is in your repo to migrate if you change direction. |
+
+### Recommendation at brief-finalize time
+
+**Default recommendation: shadcn-svelte** for v1, because:
+
+1. It is the closest 1:1 swap for the previous Laravel + ShadCN decision — same theming model, same "copy components into your repo" workflow, same Tailwind + CSS-variable conventions. The team can carry over ShadCN muscle memory without a context switch.
+2. v1 ships a *reference* admin UI. Velocity and visual coherence matter more than maximum styling flexibility at this stage. We are not building a customer-facing brand; we are building an internal tool that admins will tolerate.
+3. shadcn-svelte composes on top of Bits UI / Melt UI under the hood, so the a11y posture is inherited.
+
+**When to revisit toward Bits UI instead:**
+
+- If the design language needs to diverge significantly from ShadCN (e.g. a bespoke customer brand on the admin UI).
+- If component customization becomes a recurring tax — every styling tweak requires forking a copied component.
+- If the team wants to standardize on a headless layer across multiple future frontends (admin UI + a possible v2 customer portal).
+
+### Open question
+
+See **Q-F** in the Open Questions section. The PRD / Architecture phases must lock the primitive-library choice (Bits UI vs shadcn-svelte) before the frontend epic is broken down.
+
+---
+
 ## Open Questions
 
 These are unresolved at brief-finalize time and must be resolved in downstream phases (PRD / Architecture) before they become locked decisions:
@@ -131,6 +178,7 @@ These are unresolved at brief-finalize time and must be resolved in downstream p
 - **Q-C · Default agent reply channel.** When the agent replies to a forum post, does it post back to the originating forum (write loop), or only return via the API? Affects the auth model and the data-flow diagram.
 - **Q-D · Data retention, GDPR, right-to-be-forgotten posture.** Per-tenant policy in v1. Requires an explicit position before any real customer data lands.
 - **Q-E · Merkle-style subtree indexing feasibility.** Hypothesis from this brief's decision-log. Validate or invalidate during Architecture.
+- **Q-F · Frontend primitive library — Bits UI vs shadcn-svelte.** Svelte is locked for v1; the primitives layer (Bits UI vs shadcn-svelte) is still Open. Lock in PRD / Architecture before the frontend epic is broken down. See the "Frontend Stack Decision" section above for the full comparison and a provisional recommendation.
 
 ## Next Steps
 
