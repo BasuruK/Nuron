@@ -124,16 +124,27 @@ The v2 business possibility — a managed multi-tenant Nuron we operate — exis
 
 ## Frontend Stack Decision
 
-The frontend stack was previously committed as **Laravel + ShadCN**. It is being re-evaluated in favor of **Svelte** for the v1 presentation layer, with the ShadCN-style primitives layer still **Open** between two Svelte-ecosystem candidates: **Bits UI** and **shadcn-svelte**. This section captures the comparison at brief-finalize time so downstream phases (PRD, Architecture) can make a binding choice with full context.
+> **Stack split:** **Laravel** is the backend (REST API + auth surface). **Svelte** is the frontend (reference admin UI). This section is about the **frontend** side only — Laravel is not in scope for replacement.
 
-### Why Svelte (over Laravel)
+The v1 frontend was originally committed as **Laravel + ShadCN** (with ShadCN's React components served out of the Laravel stack). That pairing is being replaced because ShadCN is a React ecosystem; for the frontend in particular, the brief is moving to **Svelte**, with the ShadCN-style primitives layer still **Open** between two Svelte-ecosystem candidates: **Bits UI** and **shadcn-svelte**. This section captures the comparison at brief-finalize time so downstream phases (PRD, Architecture) can make a binding choice with full context.
 
-The Laravel + ShadCN choice was conservative: PHP server-rendered, ShadCN's React ecosystem is the most familiar, and Laravel gives us batteries-included auth and admin scaffolding. It is being replaced because:
+### What stays, what changes
 
-- **API-first posture.** The brief already commits that the contract is the API and auth surface, not the UI. A server-rendered PHP frontend owns the routing and the templates; that's the wrong seam for an API-first product. Svelte (paired with SvelteKit) keeps the frontend as a thin client over the API, which is the same shape as any replacement customer frontend would have.
+| Layer | v1 (this brief) | Notes |
+|---|---|---|
+| Backend / API | **Laravel** | Unchanged. REST API + auth surface per the brief. |
+| Frontend framework | **Svelte** (SvelteKit) | Replaces Laravel-served React + Blade templates. |
+| Frontend primitives | **Open** — Bits UI *or* shadcn-svelte | This is **Q-F**. Lock in PRD / Architecture. |
+| Frontend styling | Tailwind CSS | Required by both Bits UI + shadcn-svelte. |
+
+### Why Svelte for the frontend
+
+The previous choice was Laravel serving ShadCN's React components — that conflates the backend framework with the frontend framework in a way the brief now wants to clean up. The reasons to switch the *frontend* to Svelte:
+
+- **Clean API-first seam.** The brief already commits that the contract is the API and auth surface, not the UI. SvelteKit keeps the frontend as a thin client over the Laravel REST API; Laravel stays purely on the backend side. No more mixed Laravel + React templates in one app.
 - **Component portability.** Svelte components are closer to "annotated HTML" than to a framework abstraction. Customers who want to replace the reference UI can lift individual Svelte components wholesale.
-- **Build / ship ergonomics.** SvelteKit produces a static or SSR SPA with first-class server endpoints. Laravel's value (auth, ORM, queue) is redundant with the backend services already required by v1.
-- **Lower concept count.** Svelte 5 runes + a primitives library is a smaller surface area than Laravel + Blade + Inertia + a React-style component model.
+- **Build / ship ergonomics.** SvelteKit produces a static or SSR SPA with first-class server endpoints. The frontend no longer needs Laravel as a hosting surface; it can deploy to any static host or Node runtime.
+- **Lower concept count.** Svelte 5 runes + a primitives library is a smaller surface area than Laravel + Blade + Inertia + a React-style component model — and it keeps Laravel where it belongs (the backend).
 
 ### Candidates under comparison
 
@@ -153,7 +164,7 @@ Both candidates are Svelte-native and aim to give us the same outcome as the ori
 
 **Default recommendation: shadcn-svelte** for v1, because:
 
-1. It is the closest 1:1 swap for the previous Laravel + ShadCN decision — same theming model, same "copy components into your repo" workflow, same Tailwind + CSS-variable conventions. The team can carry over ShadCN muscle memory without a context switch.
+1. It is the closest 1:1 swap for the previous Laravel + ShadCN *frontend* decision — same theming model, same "copy components into your repo" workflow, same Tailwind + CSS-variable conventions. The team can carry over ShadCN muscle memory without a context switch. The difference is the framework around it: Laravel stays on the backend, Svelte serves the UI.
 2. v1 ships a *reference* admin UI. Velocity and visual coherence matter more than maximum styling flexibility at this stage. We are not building a customer-facing brand; we are building an internal tool that admins will tolerate.
 3. shadcn-svelte composes on top of Bits UI / Melt UI under the hood, so the a11y posture is inherited.
 
@@ -186,7 +197,7 @@ The brief feeds the BMM required pipeline:
 
 1. **[PRD]** `bmad-prd` — convert this brief into acceptance-criteria-grade requirements.
 2. **[CA]** `bmad-create-architecture` — formalise the LangGraph compiler / LlamaIndex Property Graph / Neo4j / RabbitMQ / Merkle-curation decisions as architectural decision records. This is where the open questions above get answered or formally parked.
-3. **[CU]** `bmad-ux` — design the Laravel presentation layer's MVP surface.
+3. **[CU]** `bmad-ux` — design the Svelte admin UI's MVP surface (Laravel stays the API backend).
 4. **[CE]** `bmad-create-epics-and-stories` — break the system into buildable units.
 5. **[IR]** `bmad-check-implementation-readiness` — final alignment gate before sprint planning.
 
