@@ -2,7 +2,7 @@
 title: "Nuron — Product Brief"
 status: draft
 created: 2026-06-19
-updated: 2026-07-05
+updated: 2026-07-06
 project: Nuron
 author: Basuruk
 facilitator: bmad-product-brief
@@ -26,7 +26,34 @@ A managed, multi-tenant Nuron-as-a-service is a v2 possibility. v1 includes the 
 
 That gap is what Nuron exists to close. Modern companies do try to close it — Confluence pages, Obsidian vaults, Notion workspaces, decision logs in Jira. The tools exist; the *connection* doesn't. One specialist's notes never meet another specialist's notes unless they both operate in a common documented place. And even when they do, the record is frozen: a Confluence page from 2022 doesn't tell you that the decision it documents was superseded in 2024 by a different one made in a different tool by a different person.
 
-The cost of this gap is not "we can't search." It is **decision loss**: every time a person leaves, every time a tool is replaced, every time a project ends without its knowledge being threaded into the next one, the organisation pays a tax in re-discovery, in repeated mistakes, in slow onboarding, and in decisions being made without the evidence that already exists somewhere in the company's own history. At scale — hundreds of emails, thousands of Confluence pages, thousands of changes per week — the tax becomes structural.
+**Mental model.** Enterprise knowledge does not live in one place — it lives across **domains** (products, processes, business functions), and within each domain across **flows** (the way work actually moves), **people** (the institutional memory in their heads), and **systems** (the tools each flow touches — Confluence, Jira, forums, wikis, inboxes). Information is scattered across all three axes, not just across tools.
+
+```text
+     Domain A                          Domain B
+    ┌─────────┐                       ┌─────────┐
+    │ People  │                       │ People  │
+    │ Systems │                       │ Systems │
+    └────┬────┘                       └────┬────┘
+         │ flows                            │ flows
+         ▼                                  ▼
+              ┌──────────────────┐
+              │     Scattered    │   <-- knowledge has to be
+              │  across domains, │       re-learned across
+              │  flows, people,  │       sessions, tools,
+              │  and systems     │       and people
+              └────────┬─────────┘
+                       ▼
+         Knowledge is fragmented by structure,
+         not just by content volume.
+```
+
+**The cost of this gap is not "we can't search."** It is **decision loss**, and it has three visible symptoms:
+
+- **People touch non-specified areas just to learn.** When a new hire (or anyone moving between products / processes) has to come up to speed, they don't learn only their domain — they constantly need to touch *adjacent, often undocumented* areas to make sense of the work in front of them. The fragmentation is felt as time spent, not as missing data.
+- **Cross-functional knowledge lives in people, not in systems.** Decisions and context that span domains (e.g. "why does the auth model handle refresh tokens this way?") are usually held by individuals who have been around long enough to know. When those individuals change roles or leave, the knowledge leaves with them unless it was deliberately written down *and* cross-linked.
+- **Operational and people-handling knowledge is treated as out of scope.** Enterprise knowledge does not stop at products and services. It includes operational knowledge (how the company actually runs: release processes, on-call rotations, vendor relationships) and *people-handling* knowledge (how decisions about teams, hires, and reorganisations were reached and evolved). Most enterprise "knowledge" tools treat these as out of scope, which is why the brain never sees them.
+
+Every time a person leaves, every time a tool is replaced, every time a project ends without its knowledge being threaded into the next one, the organisation pays a tax in re-discovery, in repeated mistakes, in slow onboarding, and in decisions being made without the evidence that already exists somewhere in the company's own history. At scale — hundreds of emails, thousands of Confluence pages, thousands of changes per week — the tax becomes structural.
 
 ## The Solution
 
@@ -42,15 +69,33 @@ The default agent is Nuron-maintained and ships with the product. Customers can 
 
 A minimal **Svelte** presentation layer (ShadCN-style primitives — see "Frontend Stack Decision" below) ships with v1 so an admin can connect sources, view the graph, and configure agents without building a frontend. Customers are explicitly invited to replace it: Nuron's contract is its API and auth surface, not its UI.
 
+The compiler treats the corpus uniformly — product docs, design docs, **testing flows**, operational runbooks, even forum threads where decisions were hashed out — and emits the same LLM-Wiki form. The brain does not distinguish "product knowledge" from "operational knowledge" or "people-handling knowledge" at the data-model level; it distinguishes *raw vs compiled* and *with vs without decision lineage*. This is deliberate: a tool that only ingests product docs will silently exclude the operational and people-handling knowledge that is most at risk when a long-tenured person leaves.
+
 ## What Makes This Different
 
-Three pillars, in order of how much they matter:
+Four pillars, in order of how much they matter. Pillars #2–#4 are sharpened by competitor research captured in the addendum (Section B: Mem0 / Cognee / Graphiti).
 
-1. **Continuity across human turnover.** This is the moat. Nuron is built around the assumption that the people feeding it will leave, change teams, or stop paying attention, and that the system must still answer questions accurately years later. That assumption shapes the data model (decisions and their lineage are first-class; raw documents are second-class), the evolution strategy (append-mostly with explicit contradiction handling), and the audit posture (every response is traceable to a node, every node is traceable to evidence).
-2. **Decision lineage, not generic RAG.** Most enterprise "knowledge graph" products store facts and entities. Nuron stores **decisions with explicit supersession chains**. The question the system is built to answer is not "what does the company know about X?" but "what did the company decide about X, when, on what evidence, and how has that decision evolved?" That is a different graph, a different retrieval path, and a different product category.
-3. **Symbiotic evolution.** The system is designed to get *more accurate over time* as more of the organisation uses it. New evidence updates or contradicts prior nodes; curator passes rewrite only the touched subtrees (Merkle-style indexing hypothesis, see addendum); confidence compounds. This is what makes the word "brain" earn its place — a static knowledge base is not a brain.
+1. **Continuity across human turnover.** This is the moat. Nuron is built around the assumption that the people feeding it will leave, change teams, or stop paying attention, and that the system must still answer questions accurately years later. That assumption shapes the data model (decisions and their lineage are first-class; raw documents are second-class), the evolution strategy (append-mostly with explicit contradiction handling), and the audit posture (every response is traceable to a node, every node is traceable to evidence). It also shapes the *scope* of what counts as knowledge: product, operational, and people-handling knowledge are all in scope, because that is what is lost when a long-tenured person leaves.
 
-We are honest about what is *not* a moat: the embeddings, the LLM choice, the Graph RAG technique. Those are all commodity by the time v1 ships. The moat is the data model and the operational discipline of running it well.
+2. **Decision lineage, not generic RAG — modelled at write time.** Most enterprise "knowledge graph" products store facts and entities. Nuron stores **decisions with explicit supersession chains**. The question the system is built to answer is not "what does the company know about X?" but "what did the company decide about X, when, on what evidence, and how has that decision evolved?" Critically: supersession is modelled **at write time, not just at retrieval time**. Every decision node carries an explicit supersession edge to its predecessor; every derived fact traces back to a raw episode (the "evidence" source); contradictions between new evidence and prior decisions are reconciled as a first-class outcome of the curator pass, not silently averaged away. This is the explicit differentiator vs Mem0 (whose temporal reasoning is retrieval-time ranking, not graph invalidation) and Cognee (which has no explicit decision entity). It is the closest to Graphiti's bi-temporal `valid_at` / `invalid_at` model, but lifted into the *decision* semantic rather than the fact semantic. See addendum §B for the per-competitor analysis.
+
+3. **Symbiotic evolution — with an external async pipeline as a real durability story.** The system is designed to get *more accurate over time* as more of the organisation uses it. New evidence updates or contradicts prior nodes; curator passes rewrite only the touched subtrees (Merkle-style indexing hypothesis, see addendum §B); confidence compounds. This is what makes the word "brain" earn its place — a static knowledge base is not a brain. **None of Mem0 / Cognee / Graphiti run an external broker** for their async pipeline; all three are in-process (Mem0 OSS is fully synchronous, Cognee uses `run_in_background` async tasks, Graphiti uses per-`group_id` `asyncio.Queue`s that are lost on restart). Nuron's RabbitMQ-driven compiler pipeline is therefore a real durability and scaling story — the compiler survives a process restart without losing in-flight ingestion, and the queue decouples source-system load spikes from runtime query latency. **But** this is also an ops tax for self-hosters, so v1 should make the in-process path the default and treat RabbitMQ as opt-in. See **Q-I**.
+
+4. **Open-core, no telemetry by default.** Competitor research surfaced that Graphiti ships with PostHog telemetry on by default (opt-out via env var), and both Mem0 and Cognee include analytics hooks in their self-hosted server images. Enterprise procurement will flag all three. Nuron ships with **no telemetry by default** — no usage analytics, no error reporting, no model-call traces leaving the customer's network — and the only outbound network traffic is whatever the customer explicitly configures (e.g. their chosen LLM provider, embedding provider). This is a cheap, durable claim and a procurement-friendly differentiator. It also matches the brief's "self-hosted, customer-controlled" posture.
+
+### Recommended embedding model floor
+
+Decision-lineage retrieval depends on entity / decision similarity working well enough that supersession candidates actually surface. The brief therefore commits to a **recommended embedding model floor** that the Architecture phase will pin:
+
+- **Minimum:** a general-purpose embedding model in the ≥ 600M-parameter class with ≥ 1024-dim output (the working consensus across Mem0's "≥ Qwen 600M" guidance and Graphiti's `EMBEDDING_DIM=1024` default).
+- **Default for v1:** an OpenAI-class hosted embedding model (e.g. `text-embedding-3-large`, 3072 dim), with the option for a local model on the customer's hardware when self-hosted LLMs are also in use.
+- **Quality bar:** the embedding model must produce semantically meaningful similarity on enterprise-shaped text (long-form, mixed register, decision-style prose), not just short factual sentences. We will not ship an embedding model that fails this bar on a representative seed corpus.
+
+The exact embedding model, dimensions, and self-hosted-vs-hosted default are Architecture decisions; this section commits only to the floor.
+
+### What is *not* a moat
+
+We are honest about what is not a moat: the embeddings, the LLM choice, the Graph RAG technique, the storage backend. Those are all commodity by the time v1 ships. The moat is the data model (decision-as-first-class, lineage at write time) and the operational discipline of running it well on a self-hosted stack.
 
 ## Who This Serves
 
@@ -105,6 +150,7 @@ A non-quantitative success signal we will watch for in the first design-partner 
 - **Multi-tenant managed Nuron-as-a-service.** v2.
 - **Non-textual content** (images, diagrams, video, audio transcripts). Text only in v1.
 - **Tenant management UI / billing / metering.** v2.
+- **OpenClaw / agent-platform plugin in v1.** Both Mem0 and Cognee ship OpenClaw plugins; the agent-platform plugin layer is now crowded. Nuron's v1 priorities are the LangGraph compiler first, MCP second; an OpenClaw plugin only ships if user demand materialises post-v1.
 
 ### Boundary clarifications
 
@@ -126,6 +172,20 @@ The v2 business possibility — a managed multi-tenant Nuron we operate — exis
 
 > **Stack split:** **Laravel** is the backend (REST API + auth surface). **Svelte** is the frontend (reference admin UI). This section is about the **frontend** side only — Laravel is not in scope for replacement.
 
+### Deployment topology (brief-level)
+
+v1 ships the API and the Web as **separate containers** in the self-hosted Docker / compose stack. At minimum:
+
+- **`nuron-api`** — Laravel REST API + auth surface. Reachable only on an internal Docker network.
+- **`nuron-web`** — SvelteKit frontend (admin UI). Reachable on the public-internal edge (the customer's reverse proxy / ingress). Calls `nuron-api` over the internal network.
+- **Data plane** — Neo4j, RabbitMQ (if enabled, see Q-I), compiler workers, any cache. Internal network only; not externally exposed.
+
+This shape (a) keeps Laravel purely on the backend side, (b) lets the frontend be replaced wholesale without touching the API container, and (c) gives an ops-portable baseline that mirrors the Docker Compose profile model used by Cognee (`ui / mcp / postgres / neo4j` profiles). The exact container set, profiles, network boundaries, and volume layout are an Architecture decision — see **Q-J**.
+
+### Styling posture
+
+Svelte's built-in scoped CSS is the **default styling layer**. Tailwind CSS is an opt-in, and is *required* only if the primitives choice lands on shadcn-svelte. This is not a separate decision — it follows from Q-F.
+
 The v1 frontend was originally committed as **Laravel + ShadCN** (with ShadCN's React components served out of the Laravel stack). That pairing is being replaced because ShadCN is a React ecosystem; for the frontend in particular, the brief is moving to **Svelte**, with the ShadCN-style primitives layer still **Open** between two Svelte-ecosystem candidates: **Bits UI** and **shadcn-svelte**. This section captures the comparison at brief-finalize time so downstream phases (PRD, Architecture) can make a binding choice with full context.
 
 ### What stays, what changes
@@ -135,7 +195,7 @@ The v1 frontend was originally committed as **Laravel + ShadCN** (with ShadCN's 
 | Backend / API | **Laravel** | Unchanged. REST API + auth surface per the brief. |
 | Frontend framework | **Svelte** (SvelteKit) | Replaces Laravel-served React + Blade templates. |
 | Frontend primitives | **Open** — Bits UI *or* shadcn-svelte | This is **Q-F**. Lock in PRD / Architecture. |
-| Frontend styling | Tailwind CSS | Required by both Bits UI + shadcn-svelte. |
+| Frontend styling | Svelte's built-in scoped CSS (default) or Tailwind CSS (opt-in) | **Not a top-level decision** — follows the primitives choice. Required by shadcn-svelte; *optional* with Bits UI (you bring the styles). |
 
 ### Why Svelte for the frontend
 
@@ -148,7 +208,7 @@ The previous choice was Laravel serving ShadCN's React components — that confl
 
 ### Candidates under comparison
 
-Both candidates are Svelte-native and aim to give us the same outcome as the original Laravel + ShadCN choice — accessible, themeable, copy-paste-able component primitives built on Tailwind CSS — but they differ significantly in *how much they own*.
+Both candidates are Svelte-native and aim to give us the same outcome as the original Laravel + ShadCN choice — accessible, themeable, copy-paste-able component primitives — but they differ significantly in *how much they own*, and they differ on the styling question: **shadcn-svelte requires Tailwind CSS**; **Bits UI does not** (it's headless; you bring the styles or use Svelte's built-in scoped CSS). The styling choice therefore follows the primitives choice, not the other way around.
 
 | Dimension | Bits UI | shadcn-svelte |
 |---|---|---|
@@ -162,17 +222,18 @@ Both candidates are Svelte-native and aim to give us the same outcome as the ori
 
 ### Recommendation at brief-finalize time
 
-**Default recommendation: shadcn-svelte** for v1, because:
+**Default recommendation: Bits UI** for v1, because:
 
-1. It is the closest 1:1 swap for the previous Laravel + ShadCN *frontend* decision — same theming model, same "copy components into your repo" workflow, same Tailwind + CSS-variable conventions. The team can carry over ShadCN muscle memory without a context switch. The difference is the framework around it: Laravel stays on the backend, Svelte serves the UI.
-2. v1 ships a *reference* admin UI. Velocity and visual coherence matter more than maximum styling flexibility at this stage. We are not building a customer-facing brand; we are building an internal tool that admins will tolerate.
-3. shadcn-svelte composes on top of Bits UI / Melt UI under the hood, so the a11y posture is inherited.
+1. **Dependency-count matches the brief's posture.** The brief already commits that the frontend is *not* the product and is replaceable. Bits UI is a small headless package; styling is left to Svelte's built-in scoped CSS or to a Tailwind opt-in. shadcn-svelte requires Tailwind and copies styled components into the repo — both add surface area that has to be justified against an admin UI customers are expected to replace.
+2. **First-party a11y is the entire reason Bits UI exists.** ARIA, focus traps, keyboard nav, roving tabindex are tested at the library level — we inherit them without doing the work ourselves. The admin UI is reference, not branded; we want the boring correct outcome.
+3. **Svelte 5 idioms over React conventions.** Bits UI is built on Melt UI / Bits (Radix) patterns ported to Svelte; it stays close to Svelte 5 runes. shadcn-svelte is a Svelte *port* of a React component line, which occasionally shows.
+4. **Lower switching cost if we revisit.** Switching primitives later is harder when styled components have been copied into the repo. With Bits UI we own the styling layer, so swapping in a different primitives library later is a library change, not a migration of in-repo styled components.
 
-**When to revisit toward Bits UI instead:**
+**When to revisit toward shadcn-svelte instead:**
 
-- If the design language needs to diverge significantly from ShadCN (e.g. a bespoke customer brand on the admin UI).
-- If component customization becomes a recurring tax — every styling tweak requires forking a copied component.
-- If the team wants to standardize on a headless layer across multiple future frontends (admin UI + a possible v2 customer portal).
+- If visual velocity (a coherent default look with zero styling work) becomes more important than dependency count — e.g. a design partner wants the admin UI to look polished on day 1 without bespoke styling.
+- If the team has strong prior ShadCN muscle memory and treats the port as a free win.
+- If we conclude that the admin UI will live longer than expected and the styling customisation tax becomes recurring.
 
 ### Open question
 
@@ -189,7 +250,11 @@ These are unresolved at brief-finalize time and must be resolved in downstream p
 - **Q-C · Default agent reply channel.** When the agent replies to a forum post, does it post back to the originating forum (write loop), or only return via the API? Affects the auth model and the data-flow diagram.
 - **Q-D · Data retention, GDPR, right-to-be-forgotten posture.** Per-tenant policy in v1. Requires an explicit position before any real customer data lands.
 - **Q-E · Merkle-style subtree indexing feasibility.** Hypothesis from this brief's decision-log. Validate or invalidate during Architecture.
-- **Q-F · Frontend primitive library — Bits UI vs shadcn-svelte.** Svelte is locked for v1; the primitives layer (Bits UI vs shadcn-svelte) is still Open. Lock in PRD / Architecture before the frontend epic is broken down. See the "Frontend Stack Decision" section above for the full comparison and a provisional recommendation.
+- **Q-F · Frontend primitive library — Bits UI vs shadcn-svelte.** Svelte is locked for v1; the primitives layer (Bits UI vs shadcn-svelte) is still Open, defaulting to **Bits UI** at brief-finalize time. Lock in PRD / Architecture before the frontend epic is broken down. See the "Frontend Stack Decision" section above for the full comparison.
+- **Q-G · Managed-wrapper / single-vendor risk (Graphiti → Zep, Cognee → Cognee Cloud, Mem0 → Mem0 Platform).** All three competitors are Apache-2.0 but their active development is anchored to a commercial wrapper / SaaS (Zep, Cognee Cloud, Mem0 Platform). If we adopt any of them as a primary backend, the roadmap follows that vendor. Decide in Architecture whether the risk warrants self-hosting dependencies or wrapping instead.
+- **Q-H · Tenant scoping key(s) for v1.** Mem0's flat filter keys (`user_id` / `agent_id` / `app_id` / `run_id`) are a lighter model than Cognee's RBAC. Confirm in Architecture whether v1 needs more than a single `workspace` (or `team`) scoping key, given v1 is single-tenant per deployment.
+- **Q-I · Async pipeline default mode — in-process vs RabbitMQ.** The external broker is a real durability / scaling story and is genuinely differentiated vs all three competitors (all in-process). But it is also an ops tax for self-hosters. Decide in Architecture whether v1 ships RabbitMQ by default or in-process by default with RabbitMQ as opt-in (mirrors Cognee's `run_in_background` toggle).
+- **Q-J · Container / compose topology.** The brief now commits to API and Web as separate containers (see Deployment Topology). Confirm the full topology in Architecture: which containers, which profiles, which internal-only vs externally-exposed network boundaries, which volumes. Reference Cognee's Docker Compose profile model (`ui / mcp / postgres / neo4j`) as a precedent.
 
 ## Next Steps
 
