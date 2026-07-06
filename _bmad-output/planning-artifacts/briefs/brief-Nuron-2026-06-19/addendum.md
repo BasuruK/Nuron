@@ -333,8 +333,7 @@ Supports the brief's three-container baseline; Architecture to finalise the topo
 - Raw landing zone (raw Markdown files before compilation) — separate Docker volume, mounted read-write by the watcher, read-only by the compiler worker.
 - Compiled document store — separate volume, mounted read-write by the compiler, read-only by the runtime query path.
 - Neo4j data — its own volume per vendor guidance.
-- Per-tenant data directory — v1 ships one tenant per deployment, but the data directory layout is per-tenant-shaped from day one (see §D.1 in the brief's existing addendum roadmap).
-
+ Per-tenant data directory — v1 ships one tenant per deployment, but the data directory layout is per-tenant-shaped from day one (see Section D in this addendum's roadmap).
 ### K.4 · Network boundaries
 - **`nuron-api`** is reachable only from `nuron-web` and from the customer's reverse proxy / API gateway.
 - **`nuron-web`** is reachable from the customer's ingress.

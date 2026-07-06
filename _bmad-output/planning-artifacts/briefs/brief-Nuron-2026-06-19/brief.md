@@ -60,7 +60,7 @@ Every time a person leaves, every time a tool is replaced, every time a project 
 Nuron runs *inside* the customer organisation as a self-hosted service. It does three things, repeatedly:
 
 1. **Ingest** raw text — v1: Markdown files dropped into a configured location; v1.1: connectors to Confluence, Jira, internal forums. The raw content goes to a landing zone untouched.
-2. **Compile** the raw content via a LangGraph agent that runs asynchronously off RabbitMQ. The compiler reads the noise (signatures, ticket transitions, duplicated threads) and emits a dense, standardised **LLM-Wiki** Markdown document — Executive Summary, Core Entities & Relationships, Known Issues & Verified Solutions, Cross-References. The compiled document is the only thing the brain ever sees.
+2. **Compile** the raw content via a LangGraph agent that runs asynchronously. The compiler reads the noise (signatures, ticket transitions, duplicated threads) and emits a dense, standardised **LLM-Wiki** Markdown document — Executive Summary, Core Entities & Relationships, Known Issues & Verified Solutions, Cross-References. The compiled document is the only thing the brain ever sees. **Queue mode (in-process by default; RabbitMQ opt-in — see Q-I)** does not change this contract.
 3. **Persist** the compiled document into a property graph (LlamaIndex `PropertyGraphIndex` over Neo4j) where entities, relationships, decisions, and decision-lineage edges become first-class nodes. A separate curator agent rewrites a curated subgraph from the latest evidence on a schedule — touching only the branches that have changed since the last pass — so the graph stays current without unbounded write amplification.
 
 The runtime query path is a separate, fast synchronous agent: a question arrives, the graph is queried with hybrid retrieval (vector + structural), the response is grounded in the decision graph and returned over the API or via SSE.
@@ -73,7 +73,7 @@ The compiler treats the corpus uniformly — product docs, design docs, **testin
 
 ## What Makes This Different
 
-Four pillars, in order of how much they matter. Pillars #2–#4 are sharpened by competitor research captured in the addendum (Section B: Mem0 / Cognee / Graphiti).
+Four pillars, in order of how much they matter. Pillars #2–#4 are sharpened by competitor research captured in the addendum (Section H: Mem0 / Cognee / Graphiti).
 
 1. **Continuity across human turnover.** This is the moat. Nuron is built around the assumption that the people feeding it will leave, change teams, or stop paying attention, and that the system must still answer questions accurately years later. That assumption shapes the data model (decisions and their lineage are first-class; raw documents are second-class), the evolution strategy (append-mostly with explicit contradiction handling), and the audit posture (every response is traceable to a node, every node is traceable to evidence). It also shapes the *scope* of what counts as knowledge: product, operational, and people-handling knowledge are all in scope, because that is what is lost when a long-tenured person leaves.
 
@@ -120,7 +120,7 @@ How we know Nuron v1 is working:
 
 - **[ASSUMPTION]** **Decision lineage is answerable.** For any decision in the graph, an API call returns the decision, its author, its timestamp, the evidence cited, and its chain of supersession to the present. End-to-end test must pass on the demo seed dataset.
 - **The pipeline is proven end to end.** Drop a folder of Markdown files into the configured location; the compiler picks them up, the graph is updated, a query returns a grounded response with citations. No human intervention required between ingest and query.
-- **The curator pass works on touched subtrees only.** A change to one branch does not cause a full re-curation. Performance budget: **[ASSUMPTION]** a single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware.
+- **[ASSUMPTION] The curator pass works on touched subtrees only.** A change to one branch does not cause a full re-curation. Performance budget: **[ASSUMPTION]** a single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware.
 - **The default agent handles ingest and reply correctly under load.** A benchmark message stream of mixed ingest + reply requests is processed without loss or duplication, with one action per request.
 - **A user-configured agent created from a Nuron template runs in the customer's environment without engineering involvement from us.** Configuration is admin UI + REST, no code changes required.
 
@@ -135,7 +135,7 @@ A non-quantitative success signal we will watch for in the first design-partner 
 - Markdown file ingestion from a configured directory. Recursive scan, configurable schedule.
 - LangGraph compiler that emits LLM-Wiki Markdown from raw input.
 - LlamaIndex `PropertyGraphIndex` over Neo4j. Hybrid retrieval (vector + structural).
-- One Nuron-maintained default agent that handles ingest and reply actions. Asynchronous, RabbitMQ-driven, one action per request.
+- One Nuron-maintained default agent that handles ingest and reply actions. Asynchronous, one action per request; runs in-process by default with RabbitMQ as opt-in (see Q-I).
 - User-configured agents created from Nuron-supplied templates. Admin UI to enable / disable / scope templates.
 - Curator agent that re-curates only touched subtrees.
 - Svelte presentation layer (Bits UI or shadcn-svelte — see "Frontend Stack Decision") with the minimum functionality: source setup, agent setup, MCP-style connection configuration, graph view, query UI.
