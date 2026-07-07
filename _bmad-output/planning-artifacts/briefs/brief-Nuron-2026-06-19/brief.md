@@ -2,7 +2,7 @@
 title: "Nuron — Product Brief"
 status: draft
 created: 2026-06-19
-updated: 2026-07-06
+updated: 2026-07-07
 project: Nuron
 author: Basuruk
 facilitator: bmad-product-brief
@@ -60,7 +60,8 @@ Every time a person leaves, every time a tool is replaced, every time a project 
 Nuron runs *inside* the customer organisation as a self-hosted service. It does three things, repeatedly:
 
 1. **Ingest** raw text — v1: Markdown files dropped into a configured location; v1.1: connectors to Confluence, Jira, internal forums. The raw content goes to a landing zone untouched.
-2. **Compile** the raw content via a LangGraph agent that runs asynchronously. The compiler reads the noise (signatures, ticket transitions, duplicated threads) and emits a dense, standardised **LLM-Wiki** Markdown document — Executive Summary, Core Entities & Relationships, Known Issues & Verified Solutions, Cross-References. The compiled document is the only thing the brain ever sees. **Queue mode (in-process by default; RabbitMQ opt-in — see Q-I)** does not change this contract.
+2. **Structure** the raw content via a structuring agent (LLM) that normalises every ingested Markdown file into the fixed **Raw Ingest Agreement** schema (Content Header, Content, Key Discoveries, Tags — see Q-B). This middle-man stage runs on ingest and produces consistently-shaped input for the compiler; the Tags block feeds BM25 / keyword retrieval downstream.
+3. **Compile** the structured content via a LangGraph agent that runs asynchronously. The compiler reads the noise (signatures, ticket transitions, duplicated threads) and emits a dense, standardised **LLM-Wiki** Markdown document — Executive Summary, Core Entities & Relationships, Known Issues & Verified Solutions, Cross-References. The compiled document is the only thing the brain ever sees. **All stages are event-driven on RabbitMQ (pub/sub) — see Q-I**; this does not change the ingest → structure → compile → graph → query contract.
 3. **Persist** the compiled document into a property graph (LlamaIndex `PropertyGraphIndex` over Neo4j) where entities, relationships, decisions, and decision-lineage edges become first-class nodes. A separate curator agent rewrites a curated subgraph from the latest evidence on a schedule — touching only the branches that have changed since the last pass — so the graph stays current without unbounded write amplification.
 
 The runtime query path is a separate, fast synchronous agent: a question arrives, the graph is queried with hybrid retrieval (vector + structural), the response is grounded in the decision graph and returned over the API or via SSE.
@@ -79,7 +80,7 @@ Four pillars, in order of how much they matter. Pillars #2–#4 are sharpened by
 
 2. **Decision lineage, not generic RAG — modelled at write time.** Most enterprise "knowledge graph" products store facts and entities. Nuron stores **decisions with explicit supersession chains**. The question the system is built to answer is not "what does the company know about X?" but "what did the company decide about X, when, on what evidence, and how has that decision evolved?" Critically: supersession is modelled **at write time, not just at retrieval time**. Every decision node carries an explicit supersession edge to its predecessor; every derived fact traces back to a raw episode (the "evidence" source); contradictions between new evidence and prior decisions are reconciled as a first-class outcome of the curator pass, not silently averaged away. This is the explicit differentiator vs Mem0 (whose temporal reasoning is retrieval-time ranking, not graph invalidation) and Cognee (which has no explicit decision entity). It is the closest to Graphiti's bi-temporal `valid_at` / `invalid_at` model, but lifted into the *decision* semantic rather than the fact semantic. See addendum §H for the per-competitor analysis.
 
-3. **Symbiotic evolution — with an external async pipeline as a real durability story.** The system is designed to get *more accurate over time* as more of the organisation uses it. New evidence updates or contradicts prior nodes; curator passes rewrite only the touched subtrees (Merkle-style indexing hypothesis, see addendum §B and §I); confidence compounds. This is what makes the word "brain" earn its place — a static knowledge base is not a brain. **None of Mem0 / Cognee / Graphiti run an external broker** for their async pipeline; all three are in-process (Mem0 OSS is fully synchronous, Cognee uses `run_in_background` async tasks, Graphiti uses per-`group_id` `asyncio.Queue`s that are lost on restart). Nuron's RabbitMQ-driven compiler pipeline is therefore a real durability and scaling story — the compiler survives a process restart without losing in-flight ingestion, and the queue decouples source-system load spikes from runtime query latency. **But** this is also an ops tax for self-hosters, so v1 should make the in-process path the default and treat RabbitMQ as opt-in. See **Q-I**.
+3. **Symbiotic evolution — with an external async pipeline as a real durability story.** The system is designed to get *more accurate over time* as more of the organisation uses it. New evidence updates or contradicts prior nodes; curator passes rewrite only the touched subtrees (Merkle-style indexing hypothesis, see addendum §B and §I); confidence compounds. This is what makes the word "brain" earn its place — a static knowledge base is not a brain. **None of Mem0 / Cognee / Graphiti run an external broker** for their async pipeline; all three are in-process (Mem0 OSS is fully synchronous, Cognee uses `run_in_background` async tasks, Graphiti uses per-`group_id` `asyncio.Queue`s that are lost on restart). Nuron's RabbitMQ-driven compiler pipeline is therefore a real durability and scaling story — the compiler survives a process restart without losing in-flight ingestion, and the queue decouples source-system load spikes from runtime query latency. v1 adopts RabbitMQ as the **default** async backbone across all pipeline stages (pub/sub model — see **Q-I**), so this durability story is the baseline, not an opt-in.
 
 4. **Open-core, no telemetry by default.** Competitor research surfaced that Graphiti ships with PostHog telemetry on by default (opt-out via env var), and both Mem0 and Cognee include analytics hooks in their self-hosted server images. Enterprise procurement will flag all three. Nuron ships with **no telemetry by default** — no usage analytics, no error reporting, no model-call traces leaving the customer's network — and the only outbound network traffic is whatever the customer explicitly configures (e.g. their chosen LLM provider, embedding provider). This is a cheap, durable claim and a procurement-friendly differentiator. It also matches the brief's "self-hosted, customer-controlled" posture.
 
@@ -135,7 +136,7 @@ A non-quantitative success signal we will watch for in the first design-partner 
 - Markdown file ingestion from a configured directory. Recursive scan, configurable schedule.
 - LangGraph compiler that emits LLM-Wiki Markdown from raw input.
 - LlamaIndex `PropertyGraphIndex` over Neo4j. Hybrid retrieval (vector + structural).
-- One Nuron-maintained default agent that handles ingest and reply actions. Asynchronous, one action per request; runs in-process by default with RabbitMQ as opt-in (see Q-I).
+- One Nuron-maintained default agent that handles ingest and reply actions. Asynchronous, one action per request; all actions are dispatched as RabbitMQ pub/sub events (RabbitMQ is the default async backbone — see Q-I).
 - User-configured agents created from Nuron-supplied templates. Admin UI to enable / disable / scope templates.
 - Curator agent that re-curates only touched subtrees.
 - Svelte presentation layer (Bits UI or shadcn-svelte — see "Frontend Stack Decision") with the minimum functionality: source setup, agent setup, MCP-style connection configuration, graph view, query UI.
@@ -178,7 +179,7 @@ v1 ships the API and the Web as **separate containers** in the self-hosted Docke
 
 - **`nuron-api`** — Laravel REST API + auth surface. Reachable only on an internal Docker network.
 - **`nuron-web`** — SvelteKit frontend (admin UI). Reachable on the public-internal edge (the customer's reverse proxy / ingress). Calls `nuron-api` over the internal network.
-- **Data plane** — Neo4j, RabbitMQ (if enabled, see Q-I), compiler workers, any cache. Internal network only; not externally exposed.
+- **Data plane** — Neo4j, RabbitMQ (required async backbone, pub/sub — see Q-I), compiler workers, any cache. Internal network only; not externally exposed.
 
 This shape (a) keeps Laravel purely on the backend side, (b) lets the frontend be replaced wholesale without touching the API container, and (c) gives an ops-portable baseline that mirrors the Docker Compose profile model used by Cognee (`ui / mcp / postgres / neo4j` profiles). The exact container set, profiles, network boundaries, and volume layout are an Architecture decision — see **Q-J**.
 
@@ -235,26 +236,46 @@ Both candidates are Svelte-native and aim to give us the same outcome as the ori
 - If the team has strong prior ShadCN muscle memory and treats the port as a free win.
 - If we conclude that the admin UI will live longer than expected and the styling customisation tax becomes recurring.
 
-### Open question
+### Decision (Q-F resolved at brief level)
 
-See **Q-F** in the Open Questions section. The PRD / Architecture phases must lock the primitive-library choice (Bits UI vs shadcn-svelte) before the frontend epic is broken down.
+**Bits UI is locked for v1.** The brief's brief-finalize default is adopted as the decision; the PRD / Architecture phases carry it forward as a locked choice. shadcn-svelte remains the documented fallback if visual velocity later outweighs dependency-count posture (see comparison above). The frontend epic may now be broken down without waiting on this question.
 
 ---
 
 ## Open Questions
 
-These are unresolved at brief-finalize time and must be resolved in downstream phases (PRD / Architecture) before they become locked decisions:
+These were unresolved at brief-finalize time. **Q-B, Q-C, Q-D, and Q-F have been resolved at the brief level** (see "Resolved at Brief Level" below) and are carried into the PRD as locked decisions. The remaining items are explicitly deferred to the Architecture phase (`[CA]`) or v2 planning and must not be locked before then.
+
+### Resolved at brief level
+
+- **Q-B · Source coverage in v1 demo / first deployment — RESOLVED.** v1 ships with **seed Markdown content only** (a thin Markdown-export path from one real source is out of v1 scope, lands in v1.1 per addendum §C). But ingestion is no longer "raw file → compiler." v1 introduces a **structuring middle-man** between raw ingest and the LLM-Wiki compiler: every ingested Markdown file is first normalised into a fixed **Raw Ingest Agreement** structure by an agent (LLM) before it reaches the compiler. This gives the downstream graph RAG extra, consistently-shaped signal to draw from — most importantly a **Tags** block (areas the raw doc touches: development, testing, user onboarding, etc.) that enables cheap **BM25 / keyword retrieval** alongside vector + structural hybrid search. The Raw Ingest Agreement v1 schema is:
+
+  ```markdown
+  ## Raw Ingest Agreement v1
+  ## Content Header
+  - Subject:
+  - Reason:
+  - Date & Time:
+  ## Content
+  - Raw content extracted with details pre-processed by an AGENT (LLM model).
+  ## Key Discoveries
+  ## Tags (areas the raw doc touches: e.g. development, testing, user onboarding)
+  ```
+
+  Rationale: the brief already rejects source-connector-first sequencing (addendum §A.5) — prove the brain against curated input, then expand what it listens to. The structuring stage operates on that curated Markdown and is backend-agnostic, so it survives the v1.1 connector expansion unchanged. The exact field set / validation is pinned in Architecture (see addendum §E "LLM-Wiki schema finalisation" — now extended to cover the Raw Ingest Agreement schema).
+- **Q-C · Default agent reply channel — RESOLVED.** In v1 the default agent **returns replies via the API / SSE only**; it does **not** post back to the originating source (no write loop). Write-back is deferred to v1.1 and is gated on the forum connector (addendum §C.2), which is where the auth-model and data-flow implications actually bite. This keeps the v1 auth model and data-flow diagram source-agnostic.
+- **Q-D · Data retention, GDPR, right-to-be-forgotten — RESOLVED (posture).** v1 ships with **per-tenant data isolation** as the foundation (per addendum §D: tenant ID on every record, per-tenant data directory, tenant-scoped auth and audit). On top of that, v1 includes a **right-to-be-forgotten primitive**: deletion is scoped by tenant/workspace and removes the data directory, all graph nodes/edges, queue messages, and audit entries for that tenant. **Retention policy is per-tenant and configurable**; default retention is indefinite until a deletion is requested. No real customer PII is processed until this primitive is in place. (Exact retention defaults and any jurisdiction-specific handling are pinned in Architecture / PRD acceptance criteria.)
+- **Q-F · Frontend primitive library — RESOLVED.** **Bits UI is locked for v1.** The brief's brief-finalize default (Bits UI) is adopted as the decision. Rationale: headless primitives keep the styling layer owned by us, match the "frontend is not the product / replaceable" posture, and give first-party a11y with the smallest dependency surface. shadcn-svelte remains the documented fallback if visual velocity becomes the priority (see "Frontend Stack Decision"). Styling therefore uses Svelte's built-in scoped CSS by default; Tailwind is an opt-in that only becomes relevant if a future decision flips the primitives choice.
+
+### Still open (deferred)
 
 - **Q-A · Cloud platform for v2 managed service.** GCP and Azure have both been mentioned. Pricing is volatile; architectural primitives matter more than platform choice for v1. Resolve during v2 planning, not v1.
-- **Q-B · Source coverage in v1 demo / first deployment.** v1 ingests Markdown files only. For the first design-partner deployment, confirm whether a thin Markdown-export path from one real source (Confluence export, forum archive) is in scope as part of v1, or whether v1 ships with seed Markdown content only and connectors land in v1.1.
-- **Q-C · Default agent reply channel.** When the agent replies to a forum post, does it post back to the originating forum (write loop), or only return via the API? Affects the auth model and the data-flow diagram.
-- **Q-D · Data retention, GDPR, right-to-be-forgotten posture.** Per-tenant policy in v1. Requires an explicit position before any real customer data lands.
 - **Q-E · Merkle-style subtree indexing feasibility.** Hypothesis from this brief's decision-log. Validate or invalidate during Architecture.
-- **Q-F · Frontend primitive library — Bits UI vs shadcn-svelte.** Svelte is locked for v1; the primitives layer (Bits UI vs shadcn-svelte) is still Open, defaulting to **Bits UI** at brief-finalize time. Lock in PRD / Architecture before the frontend epic is broken down. See the "Frontend Stack Decision" section above for the full comparison.
-- **Q-G · Managed-wrapper / single-vendor risk (Graphiti → Zep, Cognee → Cognee Cloud, Mem0 → Mem0 Platform).** All three competitors are Apache-2.0 but their active development is anchored to a commercial wrapper / SaaS (Zep, Cognee Cloud, Mem0 Platform). If we adopt any of them as a primary backend, the roadmap follows that vendor. Decide in Architecture whether the risk warrants self-hosting dependencies or wrapping instead.
-- **Q-H · Tenant scoping key(s) for v1.** Mem0's flat filter keys (`user_id` / `agent_id` / `app_id` / `run_id`) are a lighter model than Cognee's RBAC. Confirm in Architecture whether v1 needs more than a single `workspace` (or `team`) scoping key, given v1 is single-tenant per deployment.
-- **Q-I · Async pipeline default mode — in-process vs RabbitMQ.** The external broker is a real durability / scaling story and is genuinely differentiated vs all three competitors (all in-process). But it is also an ops tax for self-hosters. Decide in Architecture whether v1 ships RabbitMQ by default or in-process by default with RabbitMQ as opt-in (mirrors Cognee's `run_in_background` toggle).
-- **Q-J · Container / compose topology.** The brief now commits to API and Web as separate containers (see Deployment Topology). Confirm the full topology in Architecture: which containers, which profiles, which internal-only vs externally-exposed network boundaries, which volumes. Reference Cognee's Docker Compose profile model (`ui / mcp / postgres / neo4j`) as a precedent.
+- **Q-G · Managed-wrapper / single-vendor risk (Graphiti → Zep, Cognee → Cognee Cloud, Mem0 → Mem0 Platform).** Decide in Architecture whether the risk warrants self-hosting dependencies or wrapping instead.
+- **Q-H · Tenant scoping key(s) for v1.** Confirm in Architecture whether v1 needs more than a single `workspace` (or `team`) scoping key, given v1 is single-tenant per deployment.
+- **Q-I · Async pipeline default mode — in-process vs RabbitMQ — RESOLVED.** v1 ships **RabbitMQ as the default** async backbone. All pipeline events (ingest, compile, curate, reply) flow through a **pub/sub model** on RabbitMQ; there is no in-process-only default path. Rationale: a pub/sub broker makes every stage durable and restart-safe (in-flight ingestion survives a process restart, unlike the in-process `asyncio.Queue`s used by Graphiti — see §"What Makes This Different" pillar #3), and decouples source-system load spikes from runtime query latency. The earlier "ops tax, make in-process default" caveat is overridden by the decision that v1 is event-driven by design. The in-process path is dropped from v1 scope; RabbitMQ is a required data-plane component (see Deployment Topology and Q-J).
+  - **Broker self-hosting — CONFIRMED acceptable.** RabbitMQ is **self-hosted inside the customer's deployment** (a container in the Docker / compose stack, internal network only — see Deployment Topology). This is consistent with the brief's "self-hosted, customer-controlled, no telemetry by default" posture (pillar #4): the broker ships with the stack, carries no usage analytics, and emits no outbound traffic except to the customer's own configured LLM / embedding providers. No managed/RabbitMQ-as-a-service dependency is introduced; the broker is an ops component the customer already owns the lifecycle for, not a new vendor relationship. (Operational specifics — HA/quorum queues, durability/persistent messages, resource sizing, and failure-mode behaviour — are pinned in Architecture; see Q-J and addendum §E "RabbitMQ topology".)
+- **Q-J · Container / compose topology.** Confirm the full topology in Architecture, including the RabbitMQ placement (required data-plane container, internal-only network) and exchange/queue/routing-key layout for the pub/sub pipeline.
 
 ## Next Steps
 
