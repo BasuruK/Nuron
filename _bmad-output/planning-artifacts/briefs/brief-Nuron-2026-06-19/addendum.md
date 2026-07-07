@@ -67,6 +67,38 @@ Each connector is a separate epic. Each is gated on the v1 pipeline being valida
 
 ---
 
+## C.1 · API Gateway (Apache APISIX) — v1.1 candidate (parked)
+
+Raised during brief finalisation (2026-07-07) as a question: should an API gateway sit in front of the Laravel API backend for surge handling and authentication? Architect assessment (Winston) below; **parked to v1.1**, not a v1 decision.
+
+### C.1.1 · What it is
+Apache APISIX is an OpenResty (NGINX + LuaJIT) API gateway — a plugin chain that runs *before* a request reaches the upstream. etcd-backed declarative config; 100+ plugins. Relevant here: `limit-req` / `limit-count` (rate limiting), `client-control` (body-size caps), `health-check`, `api-breaker` (circuit breaker), `key-auth` / `jwt-auth` (edge auth validation). `openid-connect` exists but is **out of scope for v1** (OIDC/SAML/SSO is a v1 non-goal).
+
+### C.1.2 · What we gain
+- **Surge absorbed at the edge** — rejected requests never consume a PHP worker, Neo4j connection, or RabbitMQ publish. Under a spike, Laravel isn't hit.
+- **Natural home for the per-tenant rate-limit primitive** (see §D): `limit-count` keyed on `tenant_id` from the token, enforced once for every client including the internal automation agent.
+- **Single external entrypoint** (TLS, CORS, reverse-proxy target) and **observability at the edge** (Prometheus, access logs) for day-2 ops.
+- **Reinforces "Laravel internal-network only"** — APISIX is the only thing at the external edge; Laravel stays shielded.
+
+### C.1.3 · What we lose
+- **A second self-hosted component** on top of the already-accepted RabbitMQ ops tax (Q-I) — for a customer-controlled, "updates on their schedule" deployment.
+- **Added latency hop** on the synchronous query path, a **new config/attack surface** (etcd, admin API must be locked down), and a **Lua plugin learning curve** — against the brief's "keep surface area / concept count low" instinct.
+- **Risk of duplicated auth** if APISIX owns user identity instead of *fronting* Laravel's user store.
+
+### C.1.4 · Key tension
+Laravel already provides rate limiting (`Throttle` middleware) and auth (Sanctum + built-in user store). APISIX is redundant at the *app layer*; its unique value is strictly **edge enforcement** — protecting the PHP process from resource exhaustion. That value scales with **untrusted / high-volume traffic**, not business-logic complexity. Correct model: **APISIX validates token signature/expiry at the edge; Laravel still resolves user, role, and tenant from its own store.** APISIX fronts auth, never replaces the user store.
+
+### C.1.5 · Decision (parked to v1.1)
+For **single-tenant v1 with modest traffic**, APISIX is **overkill as a hard dependency**. But the per-tenant rate-limit primitive is real and the brief says build it now. Therefore:
+
+- **v1:** implement the per-tenant rate-limit primitive **in Laravel** (Sanctum token carries `tenant_id`; `Throttle`-style middleware keys on it). Satisfies §D with *no new container* — the "trivially implementable now" path.
+- **v1.1 / v2:** bring APISIX in as the **edge enforcement layer** when (a) untrusted/external traffic volume actually appears, or (b) v2 multi-tenant makes a single external chokepoint + edge auth validation worth the ops cost.
+
+### C.1.6 · Topology interaction
+APISIX (if/when added) fronts `nuron-api` for ingest/query REST+SSE only. **RabbitMQ and the pub/sub pipeline stay internal and gateway-blind** — the broker, compiler workers, and Neo4j remain behind the same internal boundary Laravel sits behind. No telemetry conflict: a self-hosted gateway emits no analytics, consistent with pillar #4 (no telemetry by default).
+
+---
+
 ## D. v2 Multi-Tenant Primitive Roadmap (parked)
 
 v1 must include the *primitives* so v2 doesn't require a rewrite. This is the minimum list:
