@@ -1,6 +1,6 @@
 ---
 title: "Nuron — PRD"
-status: draft
+status: final
 created: 2026-07-08
 updated: 2026-07-08
 project: Nuron
@@ -119,7 +119,7 @@ The Compiler can transform a Raw Ingest Agreement document into an LLM-Wiki docu
 **Consequences (testable):**
 - Every successfully structured document produces exactly one LLM-Wiki document with all four sections present.
 - The Compiler runs asynchronously; ingestion throughput is not blocked waiting for compilation to finish.
-- Duplicate or near-duplicate raw content (e.g. the same decision restated in two threads) compiles to a single Core Entity, not two. **[ASSUMPTION]** Near-duplicate is determined by an entity-similarity check (e.g. embedding cosine similarity above a pinned threshold) run by the Curator (FR-6/FR-7) against existing Core Entities before a new node is created; candidate merges below full confidence are queued for admin review rather than auto-merged silently.
+- Duplicate or near-duplicate raw content (e.g. the same decision restated in two threads) compiles to a single Core Entity, not two. **[ASSUMPTION]** Near-duplicate is determined by an entity-similarity check (e.g. embedding cosine similarity above a pinned threshold) performed at graph-persistence time (FR-5), against existing Core Entities, before a new node is created; candidate merges below full confidence are queued for admin review rather than auto-merged silently.
 
 #### FR-4: Event-driven, restart-safe pipeline dispatch
 
@@ -349,7 +349,7 @@ A non-quantitative signal we watch for regardless of the metrics below: in the f
 - **SM-4**: Admin-configured Agent Template runs unassisted — a template-derived agent runs in the customer's environment via admin UI/REST configuration only, no engineering involvement from Nuron. Validates FR-11, FR-13.
 
 **Secondary**
-- **SM-5**: **[ASSUMPTION]** Curator touched-subtree performance — a single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware. Validates FR-7.
+- **SM-5**: **[ASSUMPTION]** Curator touched-subtree performance — conditional on the Merkle-style subtree hypothesis (Q-E) being validated: a single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware. If Merkle validation fails, the fallback target is a full re-curation of the same graph in under 2 hours. Validates FR-7.
 
 **Counter-metrics (do not optimize)**
 - **SM-C1**: Raw ingestion throughput should never be optimized by skipping or weakening Raw Ingest Agreement validation (FR-2) — a fast but unstructured ingest degrades everything downstream. Counterbalances SM-2.
@@ -357,13 +357,18 @@ A non-quantitative signal we watch for regardless of the metrics below: in the f
 
 ## 9. Open Questions
 
+**Carried from the brief (deferred to Architecture):**
+
 1. **Agentic framework reconciliation.** This PRD names LlamaIndex (per user correction) as the agentic backend for the Compiler/Curator/Default Agent; the source brief's narrative names LangGraph in several places. Architecture phase must reconcile and update the brief/ADRs accordingly.
 2. **Q-A · Cloud platform for v2 managed service.** GCP vs. Azure vs. other — resolve during v2 planning, not v1.
 3. **Q-E · Merkle-style subtree indexing feasibility.** Hypothesis underlying FR-7's touched-subtree curation (brief addendum §B). Validate or invalidate during Architecture.
 4. **Q-G · Managed-wrapper / single-vendor risk** for LlamaIndex-adjacent or Neo4j-adjacent managed offerings. Decide in Architecture whether the risk warrants self-hosting dependencies or wrapping instead.
 5. **Q-H · Tenant scoping key(s) for v1.** Confirm in Architecture whether v1 needs more than a single `workspace`/`team` scoping key (FR-14), given v1 is single-tenant per deployment.
 6. **Q-J · Container/compose topology.** Confirm the full topology in Architecture, including RabbitMQ placement and exchange/queue/routing-key layout for the pub/sub pipeline (FR-4).
-7. **Message ordering, redelivery idempotency, and dead-letter handling.** FR-4 commits to at-least-once, restart-safe delivery, but per-document ordering guarantees, deduplication on redelivery, and dead-letter/poison-message handling for the compile/curate/reply stages are not specified. Architecture must define these (raised by reviewer edge-case analysis, 2026-07-08).
+
+**Raised during PRD review (2026-07-08, reviewer gate):**
+
+7. **Message ordering, redelivery idempotency, and dead-letter handling.** FR-4 commits to at-least-once, restart-safe delivery, but per-document ordering guarantees, deduplication on redelivery, and dead-letter/poison-message handling for the compile/curate/reply stages are not specified. Architecture must define these.
 8. **Schema versioning for Raw Ingest Agreement, LLM-Wiki, and graph nodes.** None of FR-2, FR-3, or FR-5 carry a version field; a future schema change (v1.1+) has no defined migration path for already-ingested content. Architecture must define a versioning and migration strategy.
 9. **Audit log retention, access control, and tamper-resistance.** FR-17 defines traceability but not retention policy, who can read the audit log, or protection against manual tampering/deletion of audit rows. Needs a decision before the audit log is treated as a compliance artifact.
 10. **Graceful degradation when Neo4j is unavailable.** The PRD does not specify fallback behavior (fail fast vs. cached results) if the graph store is temporarily unreachable. Architecture should decide.
