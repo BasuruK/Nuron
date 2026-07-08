@@ -94,6 +94,7 @@ The system can ingest Markdown files from an admin-configured directory on a con
 - Files added to the configured directory (including nested subdirectories) are picked up within one scheduled scan interval without manual triggering.
 - Raw file content is written to the Landing Zone unmodified before any structuring or compilation occurs.
 - A file that fails to ingest (unreadable, non-UTF-8, empty) is logged and does not block ingestion of other files in the same scan.
+- **[ASSUMPTION]** Files are assumed to be UTF-8 plain Markdown with optional YAML frontmatter; there is no required frontmatter schema in v1 — the structuring agent (FR-2) is responsible for extracting or inferring the Content Header from whatever the file contains. A file mid-write at scan time is not read until its modification timestamp has been stable for one scan interval, to avoid ingesting partial content.
 
 **Out of Scope:** Non-Markdown formats; source connectors (Confluence, Jira, forums) — deferred to v1.1.
 
@@ -104,7 +105,8 @@ The structuring agent can transform any landed Markdown file into a document mat
 **Consequences (testable):**
 - Every file that reaches the Compiler has all four Raw Ingest Agreement sections populated (Tags may be an empty list if no area applies, but the section must be present).
 - The Tags block enumerates the functional areas the raw doc touches (e.g. development, testing, user onboarding) and is available to downstream BM25/keyword retrieval.
-- A file that cannot be structured (e.g. content too sparse to extract a Subject) is flagged for admin review rather than silently dropped or force-compiled.
+- A file that cannot be structured (e.g. content too sparse to extract a Subject) is flagged for admin review, with the original file retained and visible in the admin UI, rather than silently dropped or force-compiled.
+- **[ASSUMPTION]** The structuring agent runs at a pinned, near-zero temperature so that re-structuring the same raw file is stable; non-deterministic structuring output is treated as a defect (it would otherwise break the Curator's touched-subtree determinism in FR-7).
 
 ### 4.2 Compilation
 
@@ -117,7 +119,7 @@ The Compiler can transform a Raw Ingest Agreement document into an LLM-Wiki docu
 **Consequences (testable):**
 - Every successfully structured document produces exactly one LLM-Wiki document with all four sections present.
 - The Compiler runs asynchronously; ingestion throughput is not blocked waiting for compilation to finish.
-- Duplicate or near-duplicate raw content (e.g. the same decision restated in two threads) compiles to a single Core Entity, not two.
+- Duplicate or near-duplicate raw content (e.g. the same decision restated in two threads) compiles to a single Core Entity, not two. **[ASSUMPTION]** Near-duplicate is determined by an entity-similarity check (e.g. embedding cosine similarity above a pinned threshold) run by the Curator (FR-6/FR-7) against existing Core Entities before a new node is created; candidate merges below full confidence are queued for admin review rather than auto-merged silently.
 
 #### FR-4: Event-driven, restart-safe pipeline dispatch
 
@@ -148,8 +150,8 @@ The system can persist an LLM-Wiki document's entities, relationships, and Decis
 The Curator can create an explicit Supersession edge from a new Decision to the prior Decision it replaces when the evidence indicates a change.
 
 **Consequences (testable):**
-- When new evidence contradicts an existing Decision, the Curator pass creates a Supersession edge rather than overwriting or deleting the prior Decision node.
-- A Decision's full lineage (its chain of predecessors) is traversable from any point in the chain to the present.
+- When new evidence contradicts an existing Decision, the Curator pass creates a Supersession edge rather than overwriting or deleting the prior Decision node. **[ASSUMPTION]** "Contradicts" means the new Evidence either explicitly states that a prior Decision was reversed/replaced, or its extracted conclusion conflicts with a prior Decision's core claim about the same named subject (per the Raw Ingest Agreement's Subject field). Candidate contradictions the Curator is not confident about are queued for admin confirmation rather than auto-superseded.
+- A Decision's lineage is modeled as a directed graph, not strictly a linear chain — a Decision may have more than one predecessor when independent sources supersede it concurrently; the full set of predecessors is traversable from any point to the present.
 - Contradiction reconciliation is a first-class Curator outcome, not a silent averaging of conflicting evidence. Realizes UJ-1's edge case.
 
 #### FR-7: Touched-subtree-only curation
@@ -159,9 +161,10 @@ The Curator can re-curate only the subtrees of the graph that have changed since
 **Consequences (testable):**
 - A curation pass that follows a change to one branch does not re-process unrelated, unchanged branches.
 - Curator output for an unchanged subtree is byte-identical to its prior output (determinism is enforced — pinned temperature, ordered inputs).
+- **This FR is conditional on the Merkle-style subtree indexing hypothesis (brief addendum §B, Open Question Q-E) being validated in Architecture.** If curator output cannot be made sufficiently deterministic, or the hash-tree approach doesn't hold up under sibling-context dependencies, the fallback is a heuristic "recently touched" windowing pass (re-curate everything touched in the last N hours) or full periodic re-curation on a longer cadence — not silent abandonment of the performance requirement.
 
 **Feature-specific NFRs:**
-- **[ASSUMPTION]** A single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware.
+- **[ASSUMPTION]** Conditional on Merkle validation: a single-pass re-curation of a 10k-node graph with 1% of subtrees touched completes in under 10 minutes on modest hardware (defined as an 8-core/32GB single-server Docker/Compose host running Neo4j, RabbitMQ, and the compiler/curator workers together). If the Merkle approach is invalidated, the fallback target is a full re-curation of the same 10k-node graph completing in under 2 hours on the same hardware.
 
 ### 4.4 Query & Retrieval
 
@@ -174,7 +177,8 @@ The system can answer a natural-language query by retrieving relevant graph cont
 **Consequences (testable):**
 - A query about a Decision returns the Decision node, its author, timestamp, cited Evidence, related Entities/Knowledge Nodes, and its Supersession chain to the present, when such a Decision exists.
 - A query with no matching Decision returns an explicit "no matching decision" response citing the closest related Entities, rather than a fabricated answer.
-- Retrieval combines at least two of the three retrieval modes (vector, structural, BM25/Tags) per query; the query API surface does not require the caller to pick a mode.
+- Retrieval combines at least two of the three retrieval modes (vector, structural, BM25/Tags) per query; the query API surface does not require the caller to pick a mode. **[ASSUMPTION]** Default ranking is a weighted combination of all three modes' scores (exact weights pinned in Architecture); if the modes disagree with no clear top result (scores within a small margin of each other), the response surfaces the top few candidates with a note rather than forcing a single unqualified answer. A mode that times out or errors is scored as absent and does not block the query.
+- If a cited Decision's Evidence has since been removed via right-to-be-forgotten (FR-15) or per-tenant retention, the response marks that citation as unavailable rather than silently omitting or fabricating it.
 
 #### FR-9: Streaming responses over SSE
 
@@ -203,8 +207,10 @@ The Default Agent can process a stream of mixed ingest and reply requests, takin
 An admin can enable, disable, and scope a Nuron-supplied Agent Template to a subset of the graph (e.g. one domain) via the admin UI or REST API.
 
 **Consequences (testable):**
+- v1 ships with at least two Agent Templates: **Onboarding Q&A** (answers scoped to a subset of the graph, aimed at new hires) and **Decision Lineage Reporter** (emits supersession chains on demand for a scoped subset). Customer-authored templates are out of scope for v1 (§6); the v1 template library is fixed at ship time.
+- A template's scope is expressed as a filter over the graph — at minimum a set of domain/Tag values (per the Raw Ingest Agreement Tags block, FR-2) — configured by the admin at enablement time, not written by the admin as a query language.
 - Enabling a template makes the resulting agent live and answering without any engineering involvement from Nuron.
-- A scoped agent's responses are limited to the configured subset of the graph; it does not surface content outside its scope.
+- A scoped agent's responses are limited to the configured subset of the graph; it does not surface content outside its scope. The admin UI blocks enabling a template whose configured scope resolves to fewer than a minimum number of compiled nodes, and warns the admin instead (realizes UJ-3's edge case).
 - Disabling a template stops the agent from accepting new requests without deleting the underlying graph content.
 
 **Out of Scope:** Freeform/customer-authored LangGraph-equivalent or LlamaIndex-workflow graphs. Agents come from Nuron-supplied templates only in v1.
@@ -220,6 +226,8 @@ The system can authenticate users against a built-in, admin-provisioned user sto
 **Consequences (testable):**
 - An admin can create, disable, and role-assign standard-user accounts; standard users cannot self-register.
 - Standard users cannot access admin-only configuration surfaces (source setup, agent template management, user management).
+- A fresh deployment with an empty user store presents a one-time setup flow to create the first admin account (not a locked login screen with no path forward).
+- The system prevents disabling or demoting the last remaining admin account, so the deployment cannot be locked out of its own administration surface.
 
 **Out of Scope:** OIDC/SAML/Entra SSO — non-goal for v1.
 
@@ -237,7 +245,7 @@ Every persistent record (graph node, edge, queue message, audit entry) can carry
 
 **Consequences (testable):**
 - No two tenants' records share a data directory, even when co-located on the same host.
-- API requests are scoped server-side to the caller's tenant regardless of what tenant identifier, if any, is present in the request body.
+- API requests are scoped server-side to the caller's tenant using the tenant identifier embedded in the caller's verified auth token/session — never a tenant identifier supplied in the request body or query parameters. A request whose token carries no valid tenant claim is rejected rather than defaulted to any tenant.
 
 #### FR-15: Right-to-be-forgotten deletion
 
@@ -246,6 +254,7 @@ An admin can trigger a tenant/workspace-scoped deletion that removes that tenant
 **Consequences (testable):**
 - After a deletion request completes, no query against the system returns content that was scoped to the deleted tenant.
 - Deletion is scoped strictly to the requested tenant/workspace; other tenants' data is unaffected.
+- Deletion scope is explicit and covers: the tenant's data directory, graph nodes/edges, in-flight and queued RabbitMQ messages tagged with that tenant, audit log entries, and any cache. If backups are enabled, the tenant's data is purged from backups on the next backup cycle at latest — deletion is not considered complete while a plain-text backup of deleted data still exists beyond that window.
 - Default retention is indefinite until a deletion is explicitly requested; retention is configurable per tenant.
 
 #### FR-16: Per-tenant rate limiting
@@ -255,6 +264,7 @@ An admin can trigger a tenant/workspace-scoped deletion that removes that tenant
 **Consequences (testable):**
 - A caller (including an internal automation agent) exceeding the configured per-tenant limit receives a rate-limit error response rather than degrading service for other tenants.
 - The rate limit is enforced consistently across every `nuron-api` endpoint, not opt-in per endpoint.
+- Interactive human users and registered internal automation agents (§2.1) are rate-limited in separate buckets within the same tenant, so a high-volume automation agent cannot exhaust the quota human users depend on.
 
 #### FR-17: Audit log
 
@@ -353,7 +363,22 @@ A non-quantitative signal we watch for regardless of the metrics below: in the f
 4. **Q-G · Managed-wrapper / single-vendor risk** for LlamaIndex-adjacent or Neo4j-adjacent managed offerings. Decide in Architecture whether the risk warrants self-hosting dependencies or wrapping instead.
 5. **Q-H · Tenant scoping key(s) for v1.** Confirm in Architecture whether v1 needs more than a single `workspace`/`team` scoping key (FR-14), given v1 is single-tenant per deployment.
 6. **Q-J · Container/compose topology.** Confirm the full topology in Architecture, including RabbitMQ placement and exchange/queue/routing-key layout for the pub/sub pipeline (FR-4).
+7. **Message ordering, redelivery idempotency, and dead-letter handling.** FR-4 commits to at-least-once, restart-safe delivery, but per-document ordering guarantees, deduplication on redelivery, and dead-letter/poison-message handling for the compile/curate/reply stages are not specified. Architecture must define these (raised by reviewer edge-case analysis, 2026-07-08).
+8. **Schema versioning for Raw Ingest Agreement, LLM-Wiki, and graph nodes.** None of FR-2, FR-3, or FR-5 carry a version field; a future schema change (v1.1+) has no defined migration path for already-ingested content. Architecture must define a versioning and migration strategy.
+9. **Audit log retention, access control, and tamper-resistance.** FR-17 defines traceability but not retention policy, who can read the audit log, or protection against manual tampering/deletion of audit rows. Needs a decision before the audit log is treated as a compliance artifact.
+10. **Graceful degradation when Neo4j is unavailable.** The PRD does not specify fallback behavior (fail fast vs. cached results) if the graph store is temporarily unreachable. Architecture should decide.
+11. **Observability requirements.** No logging/metrics/tracing requirements are specified for the pipeline or query path; needed for production support once v1 ships to a design partner.
+12. **`nuron-api` versioning policy.** No API versioning scheme (e.g. `/v1/...`) or deprecation policy is specified; needed before customer automation depends on the API.
+13. **SM-1 validation corpus.** SM-1 currently validates against "the demo seed dataset." Consider whether a design-partner deployment should also validate decision-lineage accuracy against a larger, messier, real-world-shaped corpus rather than a hand-curated seed set alone.
+14. **FR-10 benchmark parameters.** "A benchmark mixed-load stream" (FR-10) is not parameterized (request rate, ingest/reply ratio). Needs a concrete definition before it's testable as an acceptance criterion.
+15. **Evidence vs. Episode terminology.** The Glossary's "Evidence / Episode" entry conflates two possibly-distinct concepts (a single source unit vs. a temporal sequence of source units). Clarify or drop "Episode" during Architecture/UX terminology pass.
+16. **"MCP-style connection settings" (FR-13) terminology.** Confirm whether this refers to Anthropic's Model Context Protocol or a Nuron-specific convention, and define it precisely before UX designs the source/agent connection screens.
 
 ## 10. Assumptions Index
 
-- Inline assumption from §4.3 FR-7 NFR / §8 SM-5 — curator touched-subtree performance budget (10k-node graph, 1% touched, under 10 minutes on modest hardware) is not yet empirically validated.
+- Inline assumption from §4.1 FR-1 — Markdown files are assumed UTF-8 with optional YAML frontmatter and no required frontmatter schema in v1; not yet confirmed against a representative source corpus.
+- Inline assumption from §4.1 FR-2 — the structuring agent's determinism (near-zero temperature) is assumed sufficient to keep Curator hashing stable; not yet empirically validated against the chosen LLM.
+- Inline assumption from §4.2 FR-3 — near-duplicate Core Entity detection is assumed to work via an embedding-similarity threshold; the exact threshold is not yet pinned.
+- Inline assumption from §4.3 FR-6 — "contradicts" is assumed to mean an explicit reversal statement or a conflicting conclusion about the same named Subject; not yet validated against real ingested content.
+- Inline assumption from §4.3 FR-7 NFR / §8 SM-5 — curator touched-subtree performance budget (10k-node graph, 1% touched, under 10 minutes on modest hardware) is conditional on the Merkle-style subtree hypothesis (Q-E) being validated, with a full-re-curation fallback target (under 2 hours) if it is not.
+- Inline assumption from §4.4 FR-8 — default hybrid-retrieval ranking is assumed to be a weighted combination of vector/structural/BM25 scores; exact weights are not yet pinned.
