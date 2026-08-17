@@ -1,1 +1,0 @@
-After changing hooks, tools, scoring, adapters, or packaging, run npm run build and npm test. For publish-related changes, also run npm pack and inspect the tarball contents. Keep openclaw.plugin.json and src/index.ts config schema aligned.

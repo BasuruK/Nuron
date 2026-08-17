@@ -1,1 +1,0 @@
-Project is TypeScript ESM and keeps .js extensions in local imports. Keep changes small and backend-aware. Validate tool inputs at the tool boundary. Preserve memory tiers explicit/silent/ephemeral; all is query-only. Graphiti is the first-class backend path for the MVP; keep backend-specific logic behind the adapter interface.
