@@ -14,7 +14,9 @@ compile → **human merge confirmation** → property graph → a query returns 
 citing a `Decision` node reached by graph traversal.
 
 Single user. No auth, no users, no roles, no config UI, no audit log, no rate limiting, no
-tenancy, no supersession, no connectors, no write-back.
+tenancy, no supersession, no connectors, no write-back. **Because auth is off, `nuron-web` and
+`nuron-api` bind loopback only (`127.0.0.1`) and this slice is local-only** — never published on
+`0.0.0.0` or a LAN/WAN interface.
 
 **What the bullet proves:** given human-verified input, does graph persistence plus
 vector-entry/graph-expand retrieval produce a cited answer that a chunk store could not have
@@ -30,8 +32,8 @@ Six containers. RabbitMQ is not among them.
 
 | Container | Role in this slice | Exposure |
 |---|---|---|
-| `nuron-web` | SvelteKit. Upload, review queue, diff view, body editor, merge-candidate confirm, query box. | host |
-| `nuron-api` | Laravel. REST facade: upload, review, merge-confirm, query. Owns schema `nuron_api`. | host |
+| `nuron-web` | SvelteKit. Upload, review queue, diff view, body editor, merge-candidate confirm, query box. | loopback (`127.0.0.1`) |
+| `nuron-api` | Laravel. REST facade: upload, review, merge-confirm, query. Owns schema `nuron_api`. | loopback (`127.0.0.1`) |
 | `nuron-ai` | Python/LlamaIndex. Watcher, extractors, parser, review state, Compiler, persistence, query agent. Owns schema `nuron_ai`. | internal |
 | Postgres | One instance, **two schemas**. Queue, Landing Zone records, Reviewed Source versions, aliases. | internal |
 | Neo4j | Property graph **and** HNSW vector index. | internal |
@@ -48,8 +50,8 @@ comment rather than a constraint, with `nuron-ai` unable to migrate a table with
 ### Flow
 
 ```
-  watched/*.{md,txt,docx,pdf}                 upload (web → api → ai)
-  │  scan every 24h                           │  single request, size-capped
+  watched/**/*.{md,txt,docx,pdf}              upload (web → api → ai)
+  │  scan every 24h, recursive                │  single request, 25 MB cap
   │  mtime stable for 30s                     │  no mtime rule — bytes arrive complete
   └──────────────┬────────────────────────────┘
                  ▼
@@ -82,12 +84,45 @@ comment rather than a constraint, with `nuron-ai` unable to migrate a table with
         Neo4j  ◄──── query agent (agent 2): VectorContextRetriever → generate → SSE
 ```
 
+**Scan is recursive.** Extension filter unchanged (`.md`, `.txt`, `.docx`, `.pdf`). Cadence
+unchanged (24h, mtime stable 30s). **Acceptance:** a supported file at
+`watched/nested/dir/file.md` is discovered within one scan interval and processed the same as a
+top-level file; unsupported extensions in nested dirs are ignored.
+
+**Identity / concurrent ingest.** `content_hash` (sha256) is unique on the Landing Zone table.
+Inserts are conflict-safe (`ON CONFLICT DO NOTHING` or equivalent): concurrent upload and scan of
+the same bytes create one row. RustFS write is idempotent or conditional (If-None-Match / write
+only if absent); a second writer leaves the existing immutable object untouched. A12 is the
+acceptance case.
+
+**Reviewed-source contract (Compiler input).** FR-2's four-section Raw Ingest Agreement *schema*
+(Content Header / Content / Key Discoveries / Tags as a required document shape) is **superseded
+for this slice**. The Compiler consumes a human-approved Reviewed Source: Content Header
+(Subject/`title`, Date, author + `author_source`; Reason left blank if unmatched) plus the
+reviewer-edited body. Tags remain a parser/reviewer field (`tags:` frontmatter → reviewer
+correction; empty list allowed). Key Discoveries is not a required section — `decisions[]` from
+the Compiler replaces that slot. The Raw Ingest Agreement *seam* is what is retained (per-format
+extractor → common markdown → header parse). Compilation must not start until Content Header and
+body are present on the approved version.
+
 **Two agents in v1**: Compiler and query agent. The parser and extractors are code. The Curator
 is out of scope. "Default Agent" is retired as a name — the ingest pipeline is a state machine.
 
 **Pipeline states**: `landed → extracted → parsed → awaiting_review → content_approved →
 compiled → awaiting_merge_confirm → persisted`. One Postgres table in `nuron_ai`. The review
 queue *is* the work queue.
+
+**Worker claim / lease.** A worker claims a row by setting `claimed_by` + `lease_until` in the
+same `UPDATE` that selects it (`WHERE state IN (…) AND (lease_until IS NULL OR lease_until < now())`).
+Crashes during an external call (LlamaParse at `extracted`, LLM at `compiled`, embeddings at
+`persist`) expire the lease; another worker resumes from the persisted state, not from scratch.
+`extracted` is independently claimable — a LlamaParse failure does not rewind `landed`.
+
+**Attempts.** Each automated transition stores `attempt_count` and `next_attempt_at` (backoff).
+Soft-fail retries until `attempt_count` hits a persisted limit (default 5); then state becomes
+`failed` (terminal for workers, visible as needs-operator). Expired leases look like unclaimed
+rows (`lease_until < now()`) and are resumed by the next claim. Exhausted retries do **not**
+auto-resume. No in-process-only work: the row is the checkpoint.
 
 `extracted` is its own state because LlamaParse is a network call with independent failure and
 retry semantics. Both blocking states are **real persisted states**, not UI steps — a reviewer
@@ -108,15 +143,15 @@ paused.
 | 8 | `nuron-ai` owns the pipeline and its state. `nuron-api` owns the user-facing surface. |
 | 9 | **RabbitMQ deleted.** Postgres is the queue. Neo4j stays; Postgres does not replace it. |
 | 10 | "Reply" = v1.1 write-back to originating sources. Not query answering. §4.4 owns UJ-2 alone. |
-| 11 | Retrieval: **HNSW entry → graph expand** = `VectorContextRetriever(path_depth=1)`. No BM25, no RRF, no LLMRerank. |
+| 11 | Retrieval: **HNSW entry → graph expand** = `VectorContextRetriever(path_depth=2)`. No BM25, no RRF, no LLMRerank. |
 | 12 | Embeddings live in **Neo4j**, on the graph nodes. Not pgvector — no dual-write. |
-| 13 | Scheduled scan (not `inotify`), **content hash for identity** — and the hash is the object key. |
+| 13 | Scheduled **recursive** scan (not `inotify`), **content hash for identity** — and the hash is the object key. Extension filter unchanged. |
 | 14 | Re-approve **replaces** the document's provenance slice. Provenance is a **set**; refcounted. |
 | 15 | Node identity across compiles: **natural key** `normalize(name) + label`, extended by human-confirmed **aliases**. |
 | 16 | Relationship discovery at ingest: **cosine + normalised-name overlap** as candidate signals. Hop expansion deferred. |
 | 17 | Human confirms **merges** ("same thing?"), not links. Auto-joins shown as information, never asked. Link creation deferred to v1.1. |
-| 18 | Originals live in **RustFS**, content-addressed by sha256 — **not UUID**, which would break dedupe. Read back and re-hash before acking a write. |
-| 19 | **Upload is a second ingestion entry point.** Single request, size-capped. Multipart/resumable deferred. |
+| 18 | Originals live in **RustFS**, content-addressed by sha256 — **not UUID**, which would break dedupe. Unique constraint on Landing Zone `content_hash`; conflict-safe insert; RustFS write idempotent or conditional. Read back and re-hash before acking a write. |
+| 19 | **Upload is a second ingestion entry point.** Single request, size-capped at **25 MB**. Multipart/resumable deferred. |
 | 20 | v1 formats: **`.md`, `.txt`, `.docx`, `.pdf`**. No `.doc`. **No OCR** — near-empty extraction is a hard failure, never a silent empty review item. |
 | 21 | **LlamaParse for `.pdf`** — a configurable extractor, **never the shipped default** (§5.1). |
 | 22 | The bullet's fixture is `.md`/`.txt`; **A11** proves the PDF seam without blocking A1–A10. |
@@ -133,14 +168,18 @@ paused.
 | mtime stability window | 30 seconds | **Decoupled from scan interval.** FR-1 ties them together; at a 24h interval that would mean ~48h worst case from drop to review queue. |
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
 | Merge candidates | ≤5, gated on a precision bar, **default "not the same"** | Show nothing rather than weak candidates. Fatigue must produce the safe outcome. Suppress anything the natural key already auto-joined. |
+| LlamaIndex | `llama-index==0.14.23` (`llama-index-core==0.14.23`) | Pins `VectorContextRetriever.path_depth` as relation hops after the vector hit (library default is 1 = one triple). Required so A1's two-hop path is reproducible. |
+| Upload size cap | 25 MB | Enforced at `nuron-api` request intake (`post_max_size` / `upload_max_filesize`, mirrored in Laravel validation). Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
 
 ### LlamaIndex surface
 
 Use the library, don't rebuild it:
 
-- **`VectorContextRetriever(store, similarity_top_k=k, path_depth=1)`** — this *is* decision 11.
-  Vector hit, then follow relations to depth N. Wired via
+- **`VectorContextRetriever(store, similarity_top_k=k, path_depth=2)`** — this *is* decision 11.
+  Vector hit, then follow two relation hops (`Decision → session store → rate limiter`). Wired via
   `index.as_retriever(sub_retrievers=[vector_retriever])`. Retrieval is configured, not built.
+  Pin `llama-index==0.14.23` (`llama-index-core==0.14.23`) so `path_depth` stays "hops after the
+  vector hit".
 - **`SchemaLLMPathExtractor`** — `possible_entities=Literal["DECISION","ENTITY","EVIDENCE"]`,
   `possible_relations=Literal["SUPERSEDES","EVIDENCED_BY","AFFECTS","DEPENDS_ON","PART_OF"]`,
   `kg_validation_schema={...}`, `strict=True`. Pydantic-validated typed triples — decision 3's
@@ -165,31 +204,36 @@ Use the library, don't rebuild it:
 
 ## 4. Fixture and assertions
 
-Four files, `.md`. A one-file graph is entirely within vector reach and would let the bullet pass
+Five fixtures: four Markdown files and one PDF. A one-file graph is entirely within vector reach and would let the bullet pass
 without traversing anything.
 
-- **A** — the decision. *"Dropping server-side sessions for stateless JWT... — Basuru, 2026-05-14"*
+- **A** — the decision. *"Dropping the session store for stateless JWT... — Basuru, 2026-05-14"*
 - **B** — an entity doc. *"The rate limiter keys off the session store."* Does not mention JWT,
   sessions being dropped, or the decision.
 - **C** — noise. Superficially similar (tokens, auth, performance), semantically unrelated.
 - **D** — the alias case. *"The sessions table is replicated nightly."*
 - **E** — a one-page PDF carrying the same decision as **A**. Used only by A11.
 
+A and B both name `session store` identically, so A9 auto-joins on the natural key. D names
+`sessions table` — a merge candidate, never an auto-join. Candidate signals (decision 16): cosine
+similarity and normalised-name overlap on `session`.
+
 Query: **"what did the auth change affect?"** The answer is *the rate limiter*, in **B**,
-reachable only via `Decision(A) → Entity(session store) → Entity(rate limiter)`.
+reachable only via `Decision(A) → Entity(session store) → Entity(rate limiter)`. Vector search
+retrieves A (JWT) and must not independently retrieve B (no JWT).
 
 | # | Assertion |
 |---|---|
 | A1 | The query returns the rate limiter, citing a node contributed by **B**, reached by traversal. |
 | A2 | The cited Decision node: `label=Decision`, `author="Basuru"`, **`author_source="extracted"`**, `timestamp=2026-05-14`, `EVIDENCE` edge resolves to Reviewed Source A-v1. |
-| A3 | **Control** — same query, graph expansion disabled (`path_depth=0`). Must degrade or fail. If it passes, the graph contributed nothing and the bullet's finding is negative. |
+| A3 | **Control** — same query, graph expansion disabled (`path_depth=0`). Vector hits must include A and exclude B (the rate limiter is not independently retrievable). Must degrade or fail. If it passes, the graph contributed nothing and the bullet's finding is negative. |
 | A4 | A file cannot reach `compiled` without content approval, nor `persisted` without merge confirmation. |
 | A5 | Re-scan with unchanged hash is a no-op: no re-extract, no re-parse, no re-review, no LLM call. |
-| A6 | Change A, re-review, approve v2 → node count stays *N*, not 2*N*; content reflects v2; nodes contributed only by B, C, D are untouched. |
+| A6 | Change A with a **property-only or relationship-only** edit (no added/removed nodes), re-review, approve v2 → node count stays *N*, not 2*N*; provenance unique to A-v1 is removed; content reflects v2; nodes contributed only by B, C, and D are untouched. |
 | A7 | The *session store* entity — referenced by both A and B — survives removal of A-v1's provenance ref. |
 | A8 | A query with no matching Decision returns an explicit "no matching decision" citing nearest entities. Never a fabricated answer. |
 | A9 | Ingest A, then B. `Entity(session store)` is a **single node** with provenance refs to both Reviewed Sources, and A1's traversal path exists **without any human link step**. |
-| A10 | Ingest **D**. The reviewer is offered `sessions table` ≈ `session store` as a merge candidate; on confirm, one node survives carrying `sessions table` as an **alias**, with refs to A, B and D. Re-ingesting D is then a no-op — the alias matches without asking again. |
+| A10 | Ingest **D**. Candidate signals (decision 16): cosine + normalised-name overlap (`session`); names differ, so this is not an auto-join. The reviewer is offered `sessions table` ≈ `session store` as a merge candidate; on confirm, one node survives carrying `sessions table` as an **alias**, with refs to A, B and D. Re-ingesting D is then a no-op — the alias matches without asking again. |
 | A11 | **Non-blocking.** PDF **E** extracts via LlamaParse to markdown, and the deterministic header parse finds the same Subject, author and date it finds in **A**. |
 | A12 | An uploaded document and the same document dropped in the watched directory produce **one** Landing Zone record and **one** RustFS object — same hash, same key. |
 
@@ -205,21 +249,31 @@ reachable only via `Decision(A) → Entity(session store) → Entity(rate limite
   verified it *learns*. Every confirmed merge extends `normalize(name) → node` to
   many-names-per-node, so the matcher improves monotonically from human input — no threshold, no
   tuning, no regression. This is the only part of the system that gets better as it is used.
-- **A11 is deliberately non-blocking.** A1–A10 must not depend on a cloud service; if they went
-  red because LlamaCloud timed out, the bullet would have told you nothing.
+- **A11 is deliberately non-blocking.** A1–A10 must not depend on LlamaParse/LlamaCloud; if they
+  went red because LlamaCloud timed out, the bullet would have told you nothing. They still need
+  an LLM and an embedding provider — see the offline profile below.
 - **A12** proves the two entry points converge on one identity. Without it, uploading a file you
   already ingested silently duplicates everything downstream.
+
+**Offline acceptance profile (A1–A10).** A1–A10 run with no cloud: `OpenAILike` pointed at a
+loopback-compatible local LLM (`base_url` on `127.0.0.1`, `is_chat_model` /
+`is_function_calling_model` set; the startup structured-output check still required) and
+embeddings replaced by a local 1024-dim model **or** a deterministic test double that returns a
+fixed-length vector. Dimension stays 1024 (one-way door; store the model id on each node).
+LlamaParse stays off. Boot with `OFFLINE=1` (or equivalent) refuses a non-loopback LLM or
+embedding endpoint. Required providers for this profile: local OpenAI-compatible LLM + local
+1024-dim embedder or test double. A11 remains the only assertion that may call LlamaCloud.
 
 ## 5. PRD statements this supersedes
 
 | PRD | Says | Superseded by |
 |---|---|---|
-| §5.4 | `nuron-api` reachable only on the internal Docker network | `web` + `api` exposed to host; `ai`, Postgres, Neo4j, RustFS internal. This is F-1's own recommended fix. |
+| §5.4 | `nuron-api` reachable only on the internal Docker network | `web` + `api` bound to host loopback only (`127.0.0.1`); `ai`, Postgres, Neo4j, RustFS internal. This is F-1's own recommended fix, tightened because auth is off. |
 | §4.5, FR-10 | Default Agent handles ingest and reply; "Realizes UJ-2" | "Reply" is v1.1 write-back. §4.4 owns UJ-2 alone. "Default Agent" retired as a name. Resolves F-2 and F-3. |
 | §3, FR-3 | LLM-Wiki is a *Markdown document* with four sections | Structured output with an explicit `decisions[]`. **The four-section schema had no slot for the Decision node, and `author` appeared nowhere in either upstream schema — a write-side hole the adversarial review did not find.** |
-| FR-2 | Structuring agent (LLM) normalises into the Raw Ingest Agreement; failures *flagged* for admin review | Deterministic extractor + parser; **every** file gated. FR-2's near-zero-temperature `[ASSUMPTION]` deleted along with the LLM pass. **The Raw Ingest Agreement seam is retained** — see the note below. |
+| FR-2 | Structuring agent (LLM) normalises into the Raw Ingest Agreement; failures *flagged* for admin review | Deterministic extractor + parser; **every** file gated. FR-2's near-zero-temperature `[ASSUMPTION]` deleted along with the LLM pass. **The Raw Ingest Agreement *seam* is retained; the four-section schema is superseded** — see the notes below. |
 | FR-1 | *"Files must be UTF-8 plain Markdown with optional YAML frontmatter"* | `.md`, `.txt`, `.docx`, `.pdf`. Format extraction converges all of them on markdown before the header parse. |
-| FR-1 | Ingestion is a scheduled scan of a configured directory | Two entry points: scheduled scan **and** upload. Uploads skip the mtime-stability rule (bytes arrive complete) and have no second copy on disk. |
+| FR-1 | Ingestion is a scheduled scan of a configured directory | Two entry points: scheduled scan **and** upload. Uploads skip the mtime-stability rule (bytes arrive complete) and have no second copy on disk. Scan is recursive; extension filter unchanged. |
 | FR-1 | A file is not read until mtime has been stable for **one scan interval** | Stability window (30s) decoupled from scan interval (24h). Coupled, a 24h interval means ~48h worst case from drop to queue. |
 | FR-4 | "RabbitMQ is a required data-plane component, not optional" | Postgres queue. A committed row satisfies restart-safety more strongly than an unacked message, and the human gate makes the pipeline human-paced, so broker throughput is moot. Critically: the review queue *is* the work queue — RabbitMQ would be a second copy of the same state. |
 | FR-7 | Touched-subtree curation is conditional on the Merkle-style subtree indexing hypothesis | Unnecessary **for the write path** — provenance refs give the touched set directly. FR-7's Merkle question remains open for *scheduled re-curation* only. |
@@ -231,7 +285,10 @@ reachable only via `Decision(A) → Entity(session store) → Entity(rate limite
 **Note on the Raw Ingest Agreement seam.** This document originally deferred it (one source, one
 producer, one consumer — the seam wasn't earning its keep). Four input formats feeding one
 Compiler *is* the heterogeneity that seam exists for, so it is retained: per-format extractor →
-common markdown form → deterministic header parse. Reversed on new information.
+common markdown form → deterministic header parse. Reversed on new information. The *schema*
+FR-2 required (Content Header / Content / Key Discoveries / Tags, all four present before
+compile) is superseded — see **Reviewed-source contract** above. Tags survive as a field; Key
+Discoveries does not.
 
 **Note on §5.1 and LlamaParse.** §5.1 promises *"the only outbound traffic is whatever the
 customer explicitly configures — LLM provider, embedding provider."* LlamaParse is a third-party
@@ -256,7 +313,7 @@ Marked here so they are deferred rather than forgotten.
   PDFs. **This is on the critical path to shipping, not optional polish.**
 - **OCR / scanned PDFs** — out. Hard-fail on near-empty extraction.
 - **`.doc` (legacy binary)** — out. No LlamaIndex reader; needs LibreOffice.
-- **Multipart / resumable upload** — out. Single request, size-capped.
+- **Multipart / resumable upload** — out. Single request, size-capped at 25 MB.
 - **Page-anchored citations** ("jump to page 4") — needs page metadata captured at extraction.
   Check whether LlamaParse preserves page boundaries; if it does this is nearly free, and it is
   much cheaper now than retrofitted after documents are ingested.
@@ -284,7 +341,9 @@ Marked here so they are deferred rather than forgotten.
    Needs calibration against a real corpus; pick a conservative starting value and log rejections.
 2. **LlamaParse credit accounting** — credits are consumed per page and vary by parse mode, so
    verify the headroom against current pricing rather than assuming a per-document rate.
-3. **Upload size cap** — pick a number.
+3. **Upload size cap** — 25 MB, enforced at `nuron-api` request intake (`post_max_size` /
+   `upload_max_filesize`, mirrored in Laravel validation) before the upload handler or `nuron-ai`
+   extraction. See Configuration.
 4. **RustFS maturity watch.** Beta; its own README marks distributed mode, lifecycle management
    and KMS *"Under Testing."* Accepted knowingly. Because storage goes through `fsspec`, MinIO or
    S3 remain drop-in alternatives if it bites. **Uploaded documents have no second copy** — the
