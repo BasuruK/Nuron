@@ -12,7 +12,9 @@ rebuilding the index from scratch.
 
 ## Consequences
 
-Every node stores the embedding model id that produced its vector, so a migration that's only
-partially run is detectable (mixed model ids) rather than silently producing an index full of
-vectors from two incompatible spaces. Revisit the pinned value only if retrieval accuracy proves
-insufficient — not preemptively, and not without accepting the re-embed cost above.
+Every node stores the embedding model id and dimension count that produced its vector, so a
+migration that's only partially run is detectable (mixed model ids) rather than silently producing
+an index full of vectors from two incompatible spaces. A write with a model id/dimension pair that
+doesn't match the currently configured pair must be rejected at write time, not silently accepted
+into the same index. Revisit the pinned value only if retrieval accuracy proves insufficient — not
+preemptively, and not without accepting the re-embed cost above.

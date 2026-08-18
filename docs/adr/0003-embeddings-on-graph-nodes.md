@@ -6,10 +6,12 @@ status: accepted
 
 Retrieval for this slice is HNSW-entry-then-graph-expand: a vector hit *is* a graph node, and
 expansion follows edges from it. We store embeddings directly on Neo4j nodes
-(`Neo4jPropertyGraphStore(embed_kg_nodes=True)`) rather than splitting them into pgvector, even
-though Postgres is already in the stack. A split store means every persist writes twice, and a
-half-landed pair (embedding written, node write failed, or vice versa) leaves a vector pointing at
-a node that doesn't exist — silently, and directly on the only retrieval path this slice has.
+(`PropertyGraphIndex(property_graph_store=Neo4jPropertyGraphStore(...), embed_kg_nodes=True)` —
+`embed_kg_nodes` is a `PropertyGraphIndex` construction argument, not a `Neo4jPropertyGraphStore`
+one) rather than splitting them into pgvector, even though Postgres is already in the stack. A
+split store means every persist writes twice, and a half-landed pair (embedding written, node
+write failed, or vice versa) leaves a vector pointing at a node that doesn't exist — silently, and
+directly on the only retrieval path this slice has.
 
 ## Considered options
 

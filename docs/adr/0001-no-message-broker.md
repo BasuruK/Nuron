@@ -29,6 +29,15 @@ answering, and the "Default Agent" name is retired for this slice (see `CONTEXT.
 
 ## Consequences
 
-Restart-safety comes from one committed table, not from keeping a broker and a table in sync. If
-a future slice needs true async fan-out (e.g. the deferred Curator's scheduled re-curation, or
+Restart-safety comes from one committed table, not from keeping a broker and a table in sync —
+but that claim only holds because the writes to Neo4j and RustFS made from that table's rows are
+themselves crash-safe, not because the table alone guarantees it. Concretely: each row is claimed
+with an explicit worker lease (`claimed_by`/`lease_until`); a crash mid-external-call expires the
+lease and another worker resumes from the persisted state rather than from scratch; RustFS writes
+are idempotent/conditional on the content hash so a retried write after an unacked crash cannot
+duplicate an object; Neo4j writes go through `plan_delta` (`add | update | unchanged | drop_ref`),
+so a retried persist re-applies the same delta rather than double-applying it. Restart-safety is
+this combination, not the Postgres row in isolation.
+
+If a future slice needs true async fan-out (e.g. the deferred Curator's scheduled re-curation, or
 v1.1 write-back), that is new infrastructure to add deliberately, not a broker to reinstate.

@@ -22,7 +22,14 @@ point of content-addressing originals in the first place.
 ## Consequences
 
 Re-keying is not an option later without re-establishing identity for every stored object — this
-is effectively permanent once real content exists. A write must be read back and re-hashed before
-being acknowledged, since content-addressing makes integrity verifiable for free and this is the
-only thing standing between a silent storage failure and permanent loss of an uploaded original
-(RustFS is Beta and, for uploads, holds the only copy).
+is effectively permanent once real content exists. Content hash is a `UNIQUE` constraint on the
+Landing Zone table with a conflict-safe insert (`ON CONFLICT DO NOTHING` or equivalent), and the
+RustFS write for a given key is idempotent or conditional (write-only-if-absent) — both are
+required for A12 (concurrent upload and directory-scan of the same bytes converging on one record)
+to actually hold, not just for it to usually hold.
+
+A write must be read back and re-hashed before being acknowledged. This catches a failed or
+corrupted write *at ack time* — it is not durability and provides no protection against loss
+*after* a successful ack (bit rot, a RustFS bug, disk failure). RustFS is Beta and, for uploads,
+holds the only copy; that loss window is an accepted risk for this slice, not one this check
+closes.

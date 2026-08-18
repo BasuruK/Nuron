@@ -55,9 +55,14 @@ on request, never the default view a citation shows.
 
 **Natural key**:
 `normalize(name) + label` — the identity two entities are compared against before any human is
-involved. Two identically-named entities of the same label are automatically the same node
-(an **auto-join**); this deliberately under-merges; differently-named same-referents stay separate
-nodes until a human confirms otherwise.
+involved. `normalize` is case-folding and whitespace-trimming only, no stemming or fuzzy matching:
+"Session Store" and "session store" collide, "session store" and "sessions table" do not. Two
+identically-named entities of the same label are automatically the same node (an **auto-join**);
+this deliberately under-merges; differently-named same-referents stay separate nodes until a human
+confirms otherwise.
+_Accepted risk:_ auto-join has no human check — two genuinely distinct entities that happen to
+share an exact normalized name would incorrectly merge. Out of scope to fix in this slice; revisit
+if the fixture or a real corpus ever produces this collision.
 
 **Alias**:
 An alternate name a human has confirmed refers to the same entity as its natural key, folded into
