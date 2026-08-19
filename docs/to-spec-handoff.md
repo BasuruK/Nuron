@@ -1,5 +1,12 @@
 # /to-spec handoff prompt
 
+**Historical artifact, already consumed.** This prompt was pasted into a session on 2026-08-17 and
+produced issue #30 (now the tracer bullet's single tracker issue — #15 was later retired into it).
+Every repo-state claim below (branch/commit status, whether `CONTEXT.md`/`docs/adr/`/`docs/agents/`
+exist or are committed, the "suspected divergences" list) reflects **authoring time, 2026-08-17**,
+not current fact — all of it has since changed. Kept for the historical record of what prompted
+#30; verify current state (`git log`, `gh issue view 30`) rather than trusting anything below.
+
 Paste the block below into a fresh Claude Code session in this repo. It is written as arguments to
 `/to-spec`, which is user-invocable only — an agent cannot call it for you.
 
@@ -15,7 +22,7 @@ Paste the block below into a fresh Claude Code session in this repo. It is writt
 3. The 13 stories, NU-001 … NU-013 = https://github.com/BasuruK/Nuron/issues/16 through https://github.com/BasuruK/Nuron/issues/28. Full detail inline, linked as sub-issues of #15, with native `blocked_by` edges.
 4. `AGENTS.md` plus `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md` — tracker conventions, the five triage labels, and the domain-docs convention.
 
-Reference only, FROZEN, do not edit: `_bmad-output/planning-artifacts/prds/prd-Nuron-2026-07-08/prd.md` (sections 4.1–4.4) and `review-adversarial-general.md` (findings F-1, F-2, F-3).
+Reference only, FROZEN, do not edit: `_bmad-output/planning-artifacts/prds/prd-Nuron-2026-07-08/prd.md` (sections 4.1–4.4) and `_bmad-output/planning-artifacts/prds/prd-Nuron-2026-07-08/review-adversarial-general.md` (findings F-1, F-2, F-3).
 
 ## What Nuron is
 

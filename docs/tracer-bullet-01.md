@@ -18,6 +18,16 @@ tenancy, no supersession, no connectors, no write-back. **Because auth is off, `
 `nuron-api` bind loopback only (`127.0.0.1`) and this slice is local-only** — never published on
 `0.0.0.0` or a LAN/WAN interface.
 
+**This is a host-published-port restriction, not a container-networking rule.** It governs the
+compose `ports:` host bind address (`127.0.0.1:PORT:PORT`) — what's reachable from outside the
+Mac. Containers still bind their listener to their own container interface and reach each other
+over the compose network by **service name** (`nuron-api` calls `http://nuron-ai:PORT`, never
+`127.0.0.1` — inside a container, `127.0.0.1` is that container's own loopback, not another
+container's). A provider running directly on the host (not in compose) needs the runtime's
+host-gateway hostname (`host.docker.internal`, which OrbStack also supports) from inside the
+container — `127.0.0.1` in a container's `base_url` only reaches something sharing that same
+container's network namespace.
+
 **What the bullet proves:** given human-verified input, does graph persistence plus
 vector-entry/graph-expand retrieval produce a cited answer that a chunk store could not have
 produced — and does human merge confirmation make the entity matcher improve over time?
@@ -95,6 +105,20 @@ the same bytes create one row. RustFS write is idempotent or conditional (If-Non
 only if absent); a second writer leaves the existing immutable object untouched. A12 is the
 acceptance case.
 
+**Write order across the Postgres/RustFS boundary**: object write first, then the Landing Zone row.
+A crash between them leaves an unreferenced RustFS object and no row — harmless, since the next
+scan or upload of the same bytes just writes-or-no-ops the object again and then inserts the row.
+The reverse order (row first) would leave a row referencing an object that was never confirmed
+written, which a downstream reader can't safely treat as landed. There is no cross-store
+transaction; this ordering is what makes a half-landed pair harmless instead of a dangling
+reference.
+
+**Same hash, different filename.** A second arrival of already-known bytes is a no-op per A5/A12
+regardless of filename — the second filename is never consulted, including for the parser's
+filename-date-prefix fallback. Whatever the parser derived from the *first* arrival's filename (if
+frontmatter and in-prose signature both missed) is what stands; it does not get re-derived or
+overwritten by a later arrival's filename.
+
 **Reviewed-source contract (Compiler input).** FR-2's four-section Raw Ingest Agreement *schema*
 (Content Header / Content / Key Discoveries / Tags as a required document shape) is **superseded
 for this slice**. The Compiler consumes a human-approved Reviewed Source: Content Header
@@ -109,20 +133,29 @@ body are present on the approved version.
 is out of scope. "Default Agent" is retired as a name — the ingest pipeline is a state machine.
 
 **Pipeline states**: `landed → extracted → parsed → awaiting_review → content_approved →
-compiled → awaiting_merge_confirm → persisted`. One Postgres table in `nuron_ai`. The review
-queue *is* the work queue.
+compiled → awaiting_merge_confirm → persisted`, plus **`failed`** — a terminal state reachable
+from any automated transition that exhausts its retries (see Attempts). One Postgres table in
+`nuron_ai`. The review queue *is* the work queue.
 
-**Worker claim / lease.** A worker claims a row by setting `claimed_by` + `lease_until` in the
-same `UPDATE` that selects it (`WHERE state IN (…) AND (lease_until IS NULL OR lease_until < now())`).
-Crashes during an external call (LlamaParse at `extracted`, LLM at `compiled`, embeddings at
-`persist`) expire the lease; another worker resumes from the persisted state, not from scratch.
-`extracted` is independently claimable — a LlamaParse failure does not rewind `landed`.
+**Worker claim / lease.** A worker claims a row by setting `claimed_by` + `lease_until` +
+incrementing `lease_token` in the same `UPDATE` that selects it (`WHERE state IN (…) AND
+(lease_until IS NULL OR lease_until < now())`). Every subsequent write for that unit of work — the
+state-transition `UPDATE` and every external side effect (RustFS write, Neo4j persist) — is
+conditioned on `WHERE claimed_by = <worker> AND lease_token = <token>`. This guards against a
+zombie worker: one whose lease expired and was reclaimed by another worker, but which didn't crash
+and eventually tries to write its now-stale result anyway. The token makes that write a no-op
+instead of overwriting newer work. Crashes during an external call (LlamaParse at `extracted`, LLM
+at `compiled`, embeddings at `persist`) expire the lease; another worker resumes from the persisted
+state, not from scratch. `extracted` is independently claimable — a LlamaParse failure does not
+rewind `landed`.
 
 **Attempts.** Each automated transition stores `attempt_count` and `next_attempt_at` (backoff).
 Soft-fail retries until `attempt_count` hits a persisted limit (default 5); then state becomes
-`failed` (terminal for workers, visible as needs-operator). Expired leases look like unclaimed
-rows (`lease_until < now()`) and are resumed by the next claim. Exhausted retries do **not**
-auto-resume. No in-process-only work: the row is the checkpoint.
+`failed` (terminal for workers — no claim predicate selects a `failed` row — visible as
+needs-operator). Expired leases look like unclaimed rows (`lease_until < now()`) and are resumed by
+the next claim. Exhausted retries do **not** auto-resume: an operator clears `attempt_count` and
+resets the row to its last retryable state to give it another pass. No in-process-only work: the
+row is the checkpoint.
 
 `extracted` is its own state because LlamaParse is a network call with independent failure and
 retry semantics. Both blocking states are **real persisted states**, not UI steps — a reviewer
@@ -169,7 +202,7 @@ paused.
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
 | Merge candidates | ≤5, gated on a precision bar, **default "not the same"** | Show nothing rather than weak candidates. Fatigue must produce the safe outcome. Suppress anything the natural key already auto-joined. |
 | LlamaIndex | `llama-index==0.14.23` (`llama-index-core==0.14.23`) | Pins `VectorContextRetriever.path_depth` as relation hops after the vector hit (library default is 1 = one triple). Required so A1's two-hop path is reproducible. |
-| Upload size cap | 25 MB | Enforced at `nuron-api` request intake (`post_max_size` / `upload_max_filesize`, mirrored in Laravel validation). Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
+| Upload size cap | 25 MB (raw file bytes) | `upload_max_filesize=25M` caps the file itself; `post_max_size` must be set higher (e.g. `30M`) to leave headroom for multipart boundaries and other form fields, or PHP rejects a 25 MB file wrapped in a slightly-larger POST body. Mirrored in Laravel validation. Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
 
 ### LlamaIndex surface
 
@@ -256,13 +289,22 @@ retrieves A (JWT) and must not independently retrieve B (no JWT).
   already ingested silently duplicates everything downstream.
 
 **Offline acceptance profile (A1–A10).** A1–A10 run with no cloud: `OpenAILike` pointed at a
-loopback-compatible local LLM (`base_url` on `127.0.0.1`, `is_chat_model` /
-`is_function_calling_model` set; the startup structured-output check still required) and
-embeddings replaced by a local 1024-dim model **or** a deterministic test double that returns a
-fixed-length vector. Dimension stays 1024 (one-way door; store the model id on each node).
-LlamaParse stays off. Boot with `OFFLINE=1` (or equivalent) refuses a non-loopback LLM or
-embedding endpoint. Required providers for this profile: local OpenAI-compatible LLM + local
-1024-dim embedder or test double. A11 remains the only assertion that may call LlamaCloud.
+loopback-compatible local LLM (`is_chat_model` / `is_function_calling_model` set; the startup
+structured-output check still required — reachable via a compose service name or the host-gateway
+hostname per the networking note above, not necessarily literal `127.0.0.1`) and embeddings
+replaced by a local 1024-dim model **or** a deterministic test double. **The test double must be
+content-sensitive**, not a single constant vector for every input — a fixed vector regardless of
+content would make every fixture equally "similar," collapsing the HNSW ranking A1 and A3 depend
+on. A cheap deterministic option: hash or keyword-derived features padded/truncated to 1024 dims,
+same input always producing the same vector, different inputs producing distinguishably different
+ones so B ranks near A and C does not. Dimension stays 1024 (one-way door; store the model id on
+each node). The local LLM's outputs must also be deterministic across runs — pin a fixed
+seed/temperature=0 local model with golden-tested expected output, or serve canned fixture
+responses — before treating A1–A10 as reliable with it in the loop; a model that varies its output
+run-to-run makes the offline profile flaky rather than trustworthy. LlamaParse stays off. Boot with
+`OFFLINE=1` (or equivalent) refuses a non-loopback-reachable LLM or embedding endpoint. Required
+providers for this profile: local OpenAI-compatible LLM + local 1024-dim embedder or test double.
+A11 remains the only assertion that may call LlamaCloud.
 
 ## 5. PRD statements this supersedes
 
@@ -341,10 +383,7 @@ Marked here so they are deferred rather than forgotten.
    Needs calibration against a real corpus; pick a conservative starting value and log rejections.
 2. **LlamaParse credit accounting** — credits are consumed per page and vary by parse mode, so
    verify the headroom against current pricing rather than assuming a per-document rate.
-3. **Upload size cap** — 25 MB, enforced at `nuron-api` request intake (`post_max_size` /
-   `upload_max_filesize`, mirrored in Laravel validation) before the upload handler or `nuron-ai`
-   extraction. See Configuration.
-4. **RustFS maturity watch.** Beta; its own README marks distributed mode, lifecycle management
+3. **RustFS maturity watch.** Beta; its own README marks distributed mode, lifecycle management
    and KMS *"Under Testing."* Accepted knowingly. Because storage goes through `fsspec`, MinIO or
    S3 remain drop-in alternatives if it bites. **Uploaded documents have no second copy** — the
    read-back-and-re-hash check on write is the only thing standing between a silent write failure
