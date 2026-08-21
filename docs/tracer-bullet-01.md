@@ -116,15 +116,26 @@ reference.
 **Same hash, different filename.** A second arrival of already-known bytes is a no-op per A5/A12
 regardless of filename — the second filename is never consulted, including for the parser's
 filename-date-prefix fallback. **Insert before parsing, not after** — a bare row keyed by
-`content_hash` (`ON CONFLICT DO NOTHING`, `RETURNING`) lands first, with no metadata yet; only the
-arrival whose insert actually returns a row (i.e., wins the race) goes on to parse, using its own
-filename, and fills in the metadata with an `UPDATE`. A losing concurrent arrival's insert returns
-nothing, so it never parses at all — there is no discarded parse result, and no window where two
-different filenames could each produce a different stored date for the same hash. Which of several
-*simultaneous* arrivals wins the insert isn't predictable in advance, but exactly one deterministic
-outcome is written and nothing is silently re-derived later. A12's concurrent-arrival case extends
-to this: two different date-prefixed filenames, same bytes, neither carrying an in-content date —
-the row's date comes from whichever filename won the insert, once, and that choice is never revisited.
+`content_hash` (`ON CONFLICT DO NOTHING`, `RETURNING`) lands first, at state `landed`, with no
+metadata yet; only the arrival whose insert actually returns a row (i.e., wins the race) goes on to
+parse, using its own filename, and fills in the metadata with an `UPDATE` as part of the
+`landed`→`parsed` transition. A losing concurrent arrival's insert returns nothing, so it never
+parses at all — there is no discarded parse result, and no window where two different filenames
+could each produce a different stored date for the same hash. Which of several *simultaneous*
+arrivals wins the insert isn't predictable in advance, but exactly one deterministic outcome is
+written and nothing is silently re-derived later. A12's concurrent-arrival case extends to this:
+two different date-prefixed filenames, same bytes, neither carrying an in-content date — the row's
+date comes from whichever filename won the insert, once, and that choice is never revisited.
+
+**A parse failure here is not a dead end.** The bare row sits at `landed` exactly like any other
+row waiting for its next automated transition — a failed parse is an ordinary soft-fail through
+the same claim/`attempt_count`/`next_attempt_at` loop described under Worker claim / lease and
+Attempts below, not a special case for this one transition. No later arrival needs to trigger a
+retry (it can't — `ON CONFLICT DO NOTHING` guarantees that), and none needs to: the row retries
+itself when a worker reclaims it after backoff, same as a failed extraction or a failed compile.
+Enough failed attempts move it to `failed`, visible as needs-operator, same as everywhere else.
+Deleting the row on failure, or a separate sweeper for just this transition, would both fight that
+one existing mechanism rather than use it.
 
 **Reviewed-source contract (Compiler input).** FR-2's four-section Raw Ingest Agreement *schema*
 (Content Header / Content / Key Discoveries / Tags as a required document shape) is **superseded
