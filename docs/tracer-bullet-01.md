@@ -115,14 +115,16 @@ reference.
 
 **Same hash, different filename.** A second arrival of already-known bytes is a no-op per A5/A12
 regardless of filename — the second filename is never consulted, including for the parser's
-filename-date-prefix fallback. This is not a race to define away: parsing happens against an
-arrival's own filename *before* its insert, but only the arrival whose conflict-safe insert
-actually lands (`ON CONFLICT DO NOTHING`) gets to keep that parse result — a losing concurrent
-insert's parse result is simply discarded, never applied. Whichever insert wins is deterministic in
-effect (exactly one row is ever written for a given hash) even though which of several *simultaneous*
-arrivals wins isn't predictable in advance — that's fine, since by hypothesis their bytes are
-identical and the filename-date fallback is already last-resort, used only when frontmatter and
-in-prose signature both missed.
+filename-date-prefix fallback. **Insert before parsing, not after** — a bare row keyed by
+`content_hash` (`ON CONFLICT DO NOTHING`, `RETURNING`) lands first, with no metadata yet; only the
+arrival whose insert actually returns a row (i.e., wins the race) goes on to parse, using its own
+filename, and fills in the metadata with an `UPDATE`. A losing concurrent arrival's insert returns
+nothing, so it never parses at all — there is no discarded parse result, and no window where two
+different filenames could each produce a different stored date for the same hash. Which of several
+*simultaneous* arrivals wins the insert isn't predictable in advance, but exactly one deterministic
+outcome is written and nothing is silently re-derived later. A12's concurrent-arrival case extends
+to this: two different date-prefixed filenames, same bytes, neither carrying an in-content date —
+the row's date comes from whichever filename won the insert, once, and that choice is never revisited.
 
 **Reviewed-source contract (Compiler input).** FR-2's four-section Raw Ingest Agreement *schema*
 (Content Header / Content / Key Discoveries / Tags as a required document shape) is **superseded
@@ -218,7 +220,7 @@ paused.
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
 | Merge candidates | ≤5, gated on a precision bar, **default "not the same"** | Show nothing rather than weak candidates. Fatigue must produce the safe outcome. Suppress anything the natural key already auto-joined. |
 | LlamaIndex | `llama-index==0.14.23` (`llama-index-core==0.14.23`) | Pins `VectorContextRetriever.path_depth` as relation hops after the vector hit (library default is 1 = one triple). Required so A1's two-hop path is reproducible. |
-| Upload size cap | 25 MB (raw file bytes) | `upload_max_filesize=25M` caps the file itself; `post_max_size=26M` leaves 1 MB headroom for multipart boundaries and other form fields, so PHP rejects an oversized file at the PHP layer — before temp-file allocation and memory use for multipart parsing — rather than after Laravel finishes parsing it. Mirrored in Laravel validation as `max:25600` KB. Setting both PHP limits equal would let a file in the 25–26 MB window be fully parsed and buffered before Laravel's validation ever ran, defeating the point of an ini-level cap. Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
+| Upload size cap | 25 MiB (raw file bytes) | `upload_max_filesize=25M` caps the file itself — PHP's `M` ini shorthand is already binary (25×1024×1024 bytes = 25 MiB), matching Laravel's `max:25600` KB (25600×1024 bytes = 25 MiB) exactly. `post_max_size=26M` leaves 1 MiB headroom for multipart boundaries and other form fields, so PHP rejects an oversized file at the PHP layer — before temp-file allocation and memory use for multipart parsing — rather than after Laravel finishes parsing it. Setting both PHP limits equal would let a file in the 25–26 MiB window be fully parsed and buffered before Laravel's validation ever ran, defeating the point of an ini-level cap. Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
 
 ### LlamaIndex surface
 
@@ -313,14 +315,25 @@ golden, not generically derived** — a single constant vector for every input c
 ranking A1/A3 depend on, and a generic hash or keyword-overlap feature vector isn't good enough
 either: C is deliberately designed to share surface tokens (auth/token/performance) with the real
 decision while being semantically unrelated, so a naive similarity formula can rank C where it
-shouldn't. Assign each fixture file (A/B/C/D) a fixed, hand-picked 1024-dim vector — same file
-always produces the same vector — chosen so that for the query under test, vector search alone
-ranks **A** top and does **not** surface **B** (forcing A1 through the graph edge, which is the
-entire point of A3's control), while **C** ranks below A but is close enough to be a plausible
-near-miss. The offline test suite must assert this ordering explicitly (A top, B absent or below
-C, C present but not top) — not just that the final answer happens to come out right, since a
-lucky final answer with the wrong ranking underneath proves nothing about A1/A3. Dimension stays
-1024 (one-way door; store the model id on each node). The local LLM's outputs must also be
+shouldn't. Assign each fixture file (A/B/C/D) **and the query itself** a fixed, hand-picked
+1024-dim vector — same input always produces the same vector — chosen so that at
+`similarity_top_k=3`, vector search alone ranks **A** top and does **not** surface **B** within the
+top 3 (forcing A1 through the graph edge, which is the entire point of A3's control), while **C**
+ranks below A but inside the top 3, as a plausible near-miss. `k=3` against a 4-document corpus is
+deliberately tight — large enough to admit a near-miss, small enough that including everything
+would prove nothing about ranking.
+
+**This same contract applies to the local-model branch, not only the golden test double.** Whichever
+you use for a given run, the offline profile is not trustworthy until this exact assertion —
+`similarity_top_k=3`, **A** in, **B** out, **C** in but ranked below **A** — has been checked
+against it directly and passed, *before* running A1's full retrieve-then-traverse evaluation on top
+of it. A real local embedding model is not guaranteed to reproduce this ranking on a four-document
+corpus by default; treat that check as a precondition gate, not an assumption. Whichever producer
+is used, it stores its own `model_id` (ADR-0004) — the golden double never claims to be the real
+model's id. The offline test suite must assert the ordering explicitly, for whichever branch ran —
+not just that the final answer happens to come out right, since a lucky final answer with the
+wrong ranking underneath proves nothing about A1/A3. Dimension stays 1024 (one-way door; store the
+model id on each node). The local LLM's outputs must also be
 deterministic across runs — pin a fixed seed/temperature=0 local model with golden-tested expected
 output, or serve canned fixture responses — before treating A1–A10 as reliable with it in the loop;
 a model that varies its output run-to-run makes the offline profile flaky rather than

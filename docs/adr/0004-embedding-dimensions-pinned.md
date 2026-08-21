@@ -28,3 +28,11 @@ for its whole run — there's no scenario yet where the same model id string cou
 different underlying models, or where "generation" means something `model_id` doesn't already
 capture. Revisit if this ever runs multiple providers or a live migration concurrently with
 queries; speculative fields for that today would be unused config, not a working safeguard.
+
+**The offline test double is a distinct producer and must use its own `model_id`** — never the
+real model's id (e.g. `"golden-test-double-v1"`, not `"text-embedding-3-large"`). That is what
+makes the existing single-field check sufficient here without adding the fields above: a test run
+and a real run are always separate graphs (a test double never writes into the same live index a
+real embedding run reads from), so "queries filter to the configured model id" already prevents
+the one cross-producer mix-up that's actually possible in this design — a query configured for one
+producer's id silently returning nothing against the other's data, never a corrupted comparison.

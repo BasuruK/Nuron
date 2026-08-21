@@ -32,14 +32,22 @@ creation — not a vocabulary invented ahead of the evidence.
 **Merge transaction invariants**, required before NU-010 implements the confirmation gate:
 survivor selection is deterministic, not arbitrary — the pre-existing (natural-key-matched) node
 always survives, and the newly-ingested entity's name is recorded as an alias on it, never the
-reverse. On confirm, in one transaction: rewrite every inbound and outbound edge of the losing node
-to point at/from the survivor instead, union the two provenance ref-sets onto the survivor, add the
-alias, record who confirmed it, then **delete the losing node** — it is retired, not left behind as
-a zero-edge orphan. `resolve_key` (natural-key/alias lookup) only ever returns the survivor once an
-alias is recorded, so no future compile can create a fresh edge against the retired node's id.
-Re-confirming the same pair after a crash or retry must be a no-op (idempotent replay): once the
-alias exists, the losing node no longer exists to merge, so a replayed confirm has nothing left to
-retire — matching every other retry-safety rule in this slice (ADR-0001). Audit trail beyond "who
-confirmed it" and undo of a confirmed merge are both **out of scope for this slice**, not silently
-assumed: a wrong merge is corrected by a human noticing and filing a follow-up, not by a system
-rollback.
+reverse. On confirm: rewrite every inbound and outbound edge of the losing node to point at/from
+the survivor instead, union the two provenance ref-sets onto the survivor, then **delete the
+losing node** — it is retired, not left behind as a zero-edge orphan.
+
+**This is not one transaction — the alias lives in Postgres (`entity_aliases`), the node/edge
+mutation in Neo4j, and there is no cross-store transaction anywhere in this design (see ADR-0001).**
+Order matters: **write the Postgres alias first**, `ON CONFLICT DO NOTHING`, *then* perform the
+Neo4j rewrite-and-delete. A crash between them leaves the losing node still present in Neo4j with
+its edges not yet rewired — recoverable, and already correct where it matters most: any *new*
+document naming the losing name resolves through the alias to the survivor immediately, since
+`resolve_key` checks the alias table first. The Neo4j half is idempotent to retry: re-running it
+checks whether the losing node still exists before rewiring/deleting, so a retry after a partial
+Neo4j failure (or a replayed confirm once the node's already gone) is a no-op, not a repeat
+mutation. The reverse order is worse: if Neo4j completed but the Postgres alias write then failed,
+a document arriving with the losing name in that window would not find the alias and would create
+a brand-new node for a name that no longer has a backing entity in the graph — a real duplicate,
+not just a delayed cleanup. Audit trail beyond "who confirmed it" and undo of a confirmed merge are
+both **out of scope for this slice**, not silently assumed: a wrong merge is corrected by a human
+noticing and filing a follow-up, not by a system rollback.

@@ -38,8 +38,11 @@ closes.
 (tracer-bullet-01.md, "Write order across the Postgres/RustFS boundary") makes a *crash-window*
 orphan harmless — the next arrival of the same bytes just no-ops the write and inserts the row.
 It does not reclaim an object whose row insert never happens at all (the watched file is deleted
-before the next scan, an upload is never retried). No garbage collection exists in this slice for
-that case; a permanently-orphaned object just sits in RustFS, which one 5-file fixture corpus
-cannot make expensive enough to matter. Revisit with a reconciliation job (unreferenced-by-`content_hash`,
-past a grace period covering in-flight writes) only if real usage accumulates orphans worth
-reclaiming.
+before the next scan, an upload is never retried). No *automated* garbage collection exists in this
+slice — but detection is defined, not open-ended: an orphan is a RustFS key with no matching
+`content_hash` in `documents`, found by diffing the RustFS key listing against `SELECT content_hash
+FROM documents` and excluding anything younger than a grace window (covering writes still
+in-flight). **Owner: an operator, run manually** — not a scheduled job — since one 5-file fixture
+corpus cannot make unreclaimed orphans expensive enough to justify automating it yet. Revisit with
+a scheduled reconciliation job only if real usage accumulates orphans worth reclaiming without a
+human running the diff.
