@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PRD Validation: Nuron</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+
+    --grade-exc: #16a34a;
+    --grade-good: #65a30d;
+    --grade-fair: #d97706;
+    --grade-poor: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .grade {
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: white;
+    font-size: 15px;
+    white-space: nowrap;
+  }
+  .grade-excellent { background: var(--grade-exc); }
+  .grade-good { background: var(--grade-good); }
+  .grade-fair { background: var(--grade-fair); }
+  .grade-poor { background: var(--grade-poor); }
+
+  .synthesis {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+
+  .dimension-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .dim-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  section summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before {
+    content: "▸";
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    flex: 1;
+  }
+  .verdict-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+
+  .findings-list { padding: 0 20px 4px; }
+  article.finding {
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+  article.finding:first-child { border-top: none; }
+  article.finding header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .badge {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+
+  .reviewer-source {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .mechanical {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 14px;
+  }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+
+  footer.report-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+  <div class="container">
+
+    <header class="report-header">
+      <div class="title">
+        <h1>Nuron PRD — Validation Report</h1>
+        <div class="subtitle">_bmad-output/planning-artifacts/prds/prd-Nuron-2026-07-08/prd.md</div>
+      </div>
+      <div class="grade grade-poor">Poor</div>
+    </header>
+
+    <div class="synthesis">
+      <p>On the quality rubric alone, this PRD holds up well: it has a genuine thesis (write-time Decision Supersession lineage as the differentiator against Mem0/Cognee), FRs carry testable consequences almost without exception, and the 2026-07-13 Notion-comment reconciliation (<code>nuron-ai</code> split, three-source hybrid retrieval, FR-1/FR-6 confirmations, FR-11 v2 deferral) threads cleanly through every section the rubric dimensions check, leaving only two low-severity mechanical gaps.</p>
+      <p>The adversarial and edge-case-hunter passes, which stress-test cross-section consistency and boundary conditions rather than dimension maturity, tell a different story about the same 2026-07-13 changes: the <code>nuron-ai</code>/<code>nuron-api</code> service split and the FR-8 retrieval re-scope were reconciled against specific Notion comments and a clarification request, but never checked against the rest of the document the way the original 2026-07-08 draft was. That produced five genuine Critical findings — three blocking contradictions (an "internal Docker network only" claim for <code>nuron-api</code> that conflicts with external API access promised in three other passages; a synchronous-SSE-vs-async-only-RabbitMQ-dispatch conflict between what may be the same "reply"/"query" action; two sections both claiming to "Realize UJ-2" without reconciling agent identity) plus two independently-found structural gaps (GraphRAG's candidate list likely depends on seed entry points from HNSW/BM25, undermining the "three independent sources" framing; the tenant-ID trust boundary is undefined at the internal <code>nuron-api</code>→<code>nuron-ai</code> call). None of this is cosmetic, and none of it should surprise Architecture if resolved now — but it is exactly the class of gap a reviewer-gate pass exists to catch before a PRD is marked final.</p>
+    </div>
+
+    <div class="dimension-summary">
+      <div class="dim-card">
+        <div class="dim-name">Decision-readiness</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Substance over theater</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Strategic coherence</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Done-ness clarity</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">Adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Scope honesty</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Downstream usability</div>
+        <div class="dim-verdict" style="color: var(--verdict-adequate)">Adequate</div>
+      </div>
+      <div class="dim-card">
+        <div class="dim-name">Shape fit</div>
+        <div class="dim-verdict" style="color: var(--verdict-strong)">Strong</div>
+      </div>
+    </div>
+
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Decision-readiness</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Trade-offs are named with what was given up, not smoothed over: FR-7's Merkle-conditional fallback states a concrete degraded target (2 hours vs. 10 minutes); SM-C1/SM-C2 counter-metrics explicitly forbid the obvious shortcuts that would otherwise look like wins. The §7.2 <code>[NOTE FOR PM]</code> on write-back flags a real narrative tension. Open Questions (§9) are genuinely unresolved decisions deferred to Architecture, not rhetorical questions answered in the next sentence.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Substance over theater</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Four JTBD personas (§2.1) each map to a distinct feature area. The Vision (§1) names specific competitors (Mem0, Cognee) and specific mechanisms it differentiates against — not a swappable generic statement. NFRs are concrete (§5.2's embedding floor pins parameter count/dimensionality; FR-7's performance NFR defines test hardware). No boilerplate "must be scalable/secure/reliable" language found anywhere.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Strategic coherence</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>The thesis (Decisions with write-time Supersession lineage, compounding over time) drives feature sequencing and is validated by SM-1 rather than an activity metric. Counter-metrics (SM-C1, SM-C2) are present and tied to specific FRs. MVP scope reads as a coherent pipeline-proof, not a backlog with headings.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details open>
+        <summary>
+          <h2>Done-ness clarity</h2>
+          <span class="verdict-pill verdict-adequate">Adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Nearly every FR has testable, bounded consequences — a grep for vague qualifiers ("gracefully," "reasonable," "user-friendly," "robust," "scalable," "seamless") returned zero hits across the document. One gap remains, listed below.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">Low</span>
+              <h3 class="finding-title">API contract silent on audit-retrieval endpoint</h3>
+              <span class="finding-location">§5.4 vs FR-17</span>
+            </header>
+            <div class="finding-note">FR-17 requires an admin be able to retrieve cited nodes and source evidence, but §5.4's endpoint enumeration has no audit/traceability endpoint listed.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a one-line audit/traceability endpoint bullet to §5.4, or note the omission is deliberate (UI-only in v1).</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Scope honesty</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>§6 Non-Goals is explicit and comprehensive. The three remaining <code>[ASSUMPTION]</code> tags are indexed in §10 with a clean roundtrip. The FR-11/UJ-3/SM-4 v2 deferral is an honest, explicit rescope rather than a silent drop. Open-item density is high in absolute terms but proportionate to a PRD handing off to Architecture next.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details open>
+        <summary>
+          <h2>Downstream usability</h2>
+          <span class="verdict-pill verdict-adequate">Adequate</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Glossary (§3) is present and most terms are used identically across FRs, UJs, and SMs — the 2026-07-13 additions (<code>nuron-ai</code>, HNSW, Neo4j GraphRAG, RRF, LLMRerank) are all defined and consistently applied. FR/UJ/SM IDs are contiguous and cross-references resolve. One drift remains, listed below.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">Low</span>
+              <h3 class="finding-title">"Core Entity" used but never defined</h3>
+              <span class="finding-location">§4.2 FR-3, §4.3 FR-5, §10</span>
+            </header>
+            <div class="finding-note">The Glossary defines "Entity / Knowledge Node," but FR-3/FR-5 repeatedly use "Core Entity" without stating whether it's the same concept or a distinct intermediate representation.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a "Core Entity" Glossary entry distinguishing it from "Entity / Knowledge Node," or normalize FR-3/FR-5 to the Glossary term.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="dimension">
+      <details>
+        <summary>
+          <h2>Shape fit</h2>
+          <span class="verdict-pill verdict-strong">Strong</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>This is a chain-top PRD (feeds Architecture → UX → Epics) for a technical-capability/internal-tool product, and the shape matches: JTBD personas carry the "who and why" without over-building a consumer persona set, while UJ-1/UJ-2 (and deferred UJ-3) each have a named protagonist carrying context inline. Not over-formalized, not under-formalized.</p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="reviewer-section">
+      <details open>
+        <summary>
+          <h2>Adversarial review</h2>
+          <span class="reviewer-source">review-adversarial-general.md</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>The three-source hybrid retrieval clarification is a genuine improvement — no stale two-source language survives anywhere. But the <code>nuron-ai</code>/<code>nuron-api</code> service split introduced a hard contradiction: <code>nuron-api</code> is claimed reachable "only on the internal Docker network" while three other passages assume external callers hit it directly. Layered on top, two sections both claim to answer UJ-2 without saying whether the "query agent" and "Default Agent" are the same thing. Zero new Open Questions were captured from the 2026-07-13 changes despite them touching more architecture surface than the entire 07-08 reviewer gate.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">Critical</span>
+              <h3 class="finding-title">nuron-api's "internal Docker network only" claim contradicts external API access promised elsewhere</h3>
+              <span class="finding-location">§5.4 vs §2.1, UJ-2, FR-16</span>
+            </header>
+            <div class="finding-note">§5.4 says nuron-api is Docker-internal-only; the JTBD, UJ-2's entry state, and FR-16's rate-limit language all assume direct external/automation access.</div>
+            <div class="finding-fix"><strong>Fix:</strong> pick one topology and make every section agree — most likely nuron-api is exposed to ingress while only nuron-ai stays internal.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">Critical</span>
+              <h3 class="finding-title">FR-9 synchronous SSE streaming contradicts FR-10 async-only RabbitMQ dispatch</h3>
+              <span class="finding-location">§4.4 vs FR-10</span>
+            </header>
+            <div class="finding-note">If "reply" (FR-10) and "query/answer" (FR-8/FR-9) are the same action, the PRD requires it be both live-streamed and dispatched with no in-process path — no bridge is described.</div>
+            <div class="finding-fix"><strong>Fix:</strong> confirm whether they're the same action; if so, define the streaming/dispatch bridge (e.g. correlation-ID request/reply with a streaming relay).</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">Critical</span>
+              <h3 class="finding-title">Two sections both claim to "Realize UJ-2" without reconciling agent identity</h3>
+              <span class="finding-location">§4.4 vs §4.5, §5.3</span>
+            </header>
+            <div class="finding-note">§4.4 attributes UJ-2 to "a synchronous query agent"; §4.5 attributes it to the "Default Agent." §5.3 lists both as distinct components with no stated relationship.</div>
+            <div class="finding-fix"><strong>Fix:</strong> name the query-answering path exactly once; have the other section reference it.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">"Neo4j GraphRAG" naming is ambiguous and untracked</h3>
+              <span class="finding-location">Glossary vs Open Question #17</span>
+            </header>
+            <div class="finding-note">Unclear whether this means integrating Neo4j's own GraphRAG library or is descriptive language for LlamaIndex PropertyGraphIndex retrieval — same risk class as the tracked LangGraph/LlamaIndex ambiguity, but not itself tracked.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a line to Open Question #17 asking Architecture to confirm which library implements GraphRAG retrieval.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">Admin/config handoff across the nuron-ai/nuron-api boundary is undefined</h3>
+              <span class="finding-location">§5.4 vs FR-1, FR-13</span>
+            </header>
+            <div class="finding-note">Only query delegation is specified between the two services; configuration propagation for ingestion sources and connector settings is not.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend §5.4 or Open Question Q-J to explicitly cover config propagation, not just query delegation.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">"Runtime query agent" is load-bearing but missing from the Glossary</h3>
+              <span class="finding-location">§1, §4.4, §5.3</span>
+            </header>
+            <div class="finding-note">Every other named agent (Compiler, Curator, Default Agent) has a formal Glossary definition; the query agent does not, obscuring whether it's a fourth distinct agent.</div>
+            <div class="finding-fix"><strong>Fix:</strong> add a Glossary entry and standardize the name across sections.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">SM-C2 vs. FR-8's degraded-path clause draw a fuzzy "forbidden vs required" line on dropping sources</h3>
+              <span class="finding-location">SM-C2 vs FR-8</span>
+            </header>
+            <div class="finding-note">Without a concrete timeout threshold, there's no way to audit whether a missing source's contribution was a genuine failure or a latency-motivated skip.</div>
+            <div class="finding-fix"><strong>Fix:</strong> pin an explicit per-source timeout so "timed out" is a bright line.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">Zero new Open Questions captured from the 2026-07-13 changes</h3>
+              <span class="finding-location">Decision log vs §9</span>
+            </header>
+            <div class="finding-note">The service split and retrieval re-scope touch as much architecture as the entire 07-08 reviewer gate, yet added no new tracked Open Questions.</div>
+            <div class="finding-fix"><strong>Fix:</strong> route future architecture-touching changes through the same reviewer-gate discipline as the initial draft.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">FR-17 audit log lacks per-source retrieval provenance</h3>
+              <span class="finding-location">FR-17</span>
+            </header>
+            <div class="finding-note">The audit log captures cited nodes but not which of HNSW/BM25/GraphRAG surfaced each one, weakening the ability to demonstrate GraphRAG is pulling its weight.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend FR-17 to record contributing source(s) per citation, or scope out as v1.1.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">§4.3 conflates initial persistence (FR-5) and scheduled re-curation (FR-7) under a single "Curator" actor</h3>
+              <span class="finding-location">§4.3 vs FR-5, Glossary</span>
+            </header>
+            <div class="finding-note">The Glossary defines Curator narrowly as the scheduled re-curation agent, while §4.3 also attributes initial persistence to it and FR-5 attributes it to generic nuron-ai.</div>
+            <div class="finding-fix"><strong>Fix:</strong> state explicitly whether the Curator owns both triggers, or split and name each actor.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">Low</span>
+              <h3 class="finding-title">"Commodity graph technique" framing sits awkwardly against the bespoke three-source retrieval investment</h3>
+              <span class="finding-location">§1 Vision vs FR-8</span>
+            </header>
+            <div class="finding-note">The Vision disclaims the graph technique as commodity, yet FR-8 specifies a materially sophisticated, harder-to-replicate retrieval design.</div>
+            <div class="finding-fix"><strong>Fix:</strong> no v1 action required; revisit the framing if retrieval quality proves a genuine differentiator.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <section class="reviewer-section">
+      <details open>
+        <summary>
+          <h2>Edge case hunter review</h2>
+          <span class="reviewer-source">review-edge-case-hunter.md</span>
+        </summary>
+        <div class="dim-body">
+          <div class="dim-judgment">
+            <p>Fresh pass focused on the two 2026-07-13 changes: the nuron-ai/nuron-api service split and FR-8's three-source hybrid retrieval fusion. 15 findings: 2 Critical, 7 High, 4 Medium, 2 Low. Prior 2026-07-08 gate findings and batched Open Questions were not re-flagged unless the new changes created a materially new variant.</p>
+          </div>
+        </div>
+        <div class="findings-list">
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">Critical</span>
+              <h3 class="finding-title">EC-3.1 — Neo4j GraphRAG's candidate independence assumes seed entry points it may not have</h3>
+              <span class="finding-location">FR-8</span>
+            </header>
+            <div class="finding-note">Graph traversal typically needs seed nodes; if GraphRAG's seeds derive from HNSW/BM25 output, the "three independent sources" framing FR-8 and SM-C2 rely on isn't achievable as written.</div>
+            <div class="finding-fix"><strong>Fix:</strong> Architecture must specify GraphRAG's seed-selection mechanism and state whether it can run with zero vector/lexical input.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-critical">Critical</span>
+              <h3 class="finding-title">EC-5.1 — Tenant-ID trust boundary undefined at the internal nuron-api→nuron-ai call</h3>
+              <span class="finding-location">FR-14, §5.4</span>
+            </header>
+            <div class="finding-note">FR-14's verified-token-only rule covers the public API only; the actual tenant-scoped query executes inside nuron-ai with no equivalent rule for the internal call.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend FR-14's rule to the internal boundary, or require nuron-ai to independently re-validate the tenant claim.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-2.1 — Supersession fan-out has no reconciliation rule</h3>
+              <span class="finding-location">FR-6, FR-8</span>
+            </header>
+            <div class="finding-note">One predecessor superseded by two or more unreconciled successors leaves "the present" lineage head undefined during traversal.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend FR-6 to trigger on unreconciled fan-out; define traversal behavior at an unresolved fork.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-2.2 — RTBF deletion of a mid-chain Decision doesn't specify Supersession-edge cleanup</h3>
+              <span class="finding-location">FR-15, FR-8</span>
+            </header>
+            <div class="finding-note">Deleting a mid-chain node risks a dangling edge or untraceable gap during lineage traversal, with no defined fallback.</div>
+            <div class="finding-fix"><strong>Fix:</strong> define whether deletion bridges the chain around the gap or truncates traversal with an explicit "lineage incomplete" marker.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-3.2 — Vector/lexical-only degradation can silently drop Supersession lineage from an answer</h3>
+              <span class="finding-location">FR-8</span>
+            </header>
+            <div class="finding-note">A generic degraded-path marker doesn't distinguish "lineage context specifically was missing" from any other source dropping out.</div>
+            <div class="finding-fix"><strong>Fix:</strong> require the degraded-path record to explicitly flag when lineage retrieval was skipped.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-3.3 — No cross-source deduplication rule before RRF fusion</h3>
+              <span class="finding-location">FR-8</span>
+            </header>
+            <div class="finding-note">HNSW and GraphRAG can surface the same node independently; without a stated dedup rule, fused ranking becomes non-deterministic.</div>
+            <div class="finding-fix"><strong>Fix:</strong> define dedup-by-node-ID as a pre-fusion step with a rank-precedence rule.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-3.4 — No defined behavior for simultaneous multi-source failure</h3>
+              <span class="finding-location">FR-8</span>
+            </header>
+            <div class="finding-note">Two-of-three or all-three sources failing at once has no stated response contract.</div>
+            <div class="finding-fix"><strong>Fix:</strong> define a minimum-surviving-sources threshold below which the query fails explicitly.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-5.2 — nuron-ai crash/restart mid-query isn't covered by any stated contract</h3>
+              <span class="finding-location">FR-9, §5.1</span>
+            </header>
+            <div class="finding-note">Restart-safety NFR is scoped only to the async pipeline (FR-4), leaving the synchronous query/SSE path's restart behavior undefined.</div>
+            <div class="finding-fix"><strong>Fix:</strong> extend restart-safety guarantees, or define a distinct contract, for the synchronous query path.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-high">High</span>
+              <h3 class="finding-title">EC-5.5 — RTBF cascade has no defined behavior if nuron-ai is unreachable during deletion</h3>
+              <span class="finding-location">FR-15</span>
+            </header>
+            <div class="finding-note">No stated retry/queuing contract risks nuron-api-side data purged while nuron-ai's graph data survives, violating the deletion guarantee.</div>
+            <div class="finding-fix"><strong>Fix:</strong> require the deletion operation to durably queue the nuron-ai-side cascade and confirm completion before considering it done.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">EC-3.5 — No RRF tie-breaking rule</h3>
+              <span class="finding-location">FR-8</span>
+            </header>
+            <div class="finding-note">Ties in fused RRF score have no stated deterministic resolution.</div>
+            <div class="finding-fix"><strong>Fix:</strong> pin a deterministic tie-break alongside the RRF constant deferred to Open Question #17.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">EC-4.1 — "Reply" (async) vs. "query" (synchronous) path ambiguity</h3>
+              <span class="finding-location">FR-10, FR-8</span>
+            </header>
+            <div class="finding-note">The two mechanisms could diverge in retrieval logic or error handling without anyone noticing.</div>
+            <div class="finding-fix"><strong>Fix:</strong> state explicitly whether they're the same logical operation via different transports.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">EC-5.3 — Cross-service config propagation for nuron-ai-side settings is unspecified</h3>
+              <span class="finding-location">FR-13</span>
+            </header>
+            <div class="finding-note">Unclear whether retrieval/LLM/embedding config is pushed, polled, or configured directly in nuron-ai out of band.</div>
+            <div class="finding-fix"><strong>Fix:</strong> clarify in Architecture which service owns which config surface and how changes propagate.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-medium">Medium</span>
+              <h3 class="finding-title">EC-5.4 — Per-tenant rate limiting doesn't protect nuron-ai's shared capacity</h3>
+              <span class="finding-location">FR-16</span>
+            </header>
+            <div class="finding-note">Many tenants individually within quota could collectively saturate nuron-ai's shared compute with no aggregate throttle.</div>
+            <div class="finding-fix"><strong>Fix:</strong> consider a concurrency/queue-depth cap on nuron-ai independent of the per-tenant limiter.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">Low</span>
+              <h3 class="finding-title">EC-1.1 — No canonical tag vocabulary for the Tags block</h3>
+              <span class="finding-location">FR-2, FR-8</span>
+            </header>
+            <div class="finding-note">Tag drift silently degrades the BM25/Tags fusion source's consistency over time.</div>
+            <div class="finding-fix"><strong>Fix:</strong> define a canonical tag taxonomy or synonym-folding step at structuring time.</div>
+          </article>
+          <article class="finding">
+            <header>
+              <span class="badge badge-sev-low">Low</span>
+              <h3 class="finding-title">EC-5.6 — Audit trail doesn't specify per-source provenance across the three retrieval sources</h3>
+              <span class="finding-location">FR-17</span>
+            </header>
+            <div class="finding-note">Found independently of the adversarial reviewer's identical FR-17 finding — a convergent signal.</div>
+            <div class="finding-fix"><strong>Fix:</strong> include per-source contribution (pre- and post-fusion rank) in the audit record.</div>
+          </article>
+        </div>
+      </details>
+    </section>
+
+    <div class="mechanical">
+      <h3>Mechanical notes</h3>
+      <ul>
+        <li>2026-07-13 reconciliation integrity (rubric): verified clean — no stale two-source retrieval language, no lingering "LangGraph" outside the tracked Open Question #1, no orphaned Agent-Template v1 references.</li>
+        <li>Assumptions Index roundtrip: clean — exactly 3 inline <code>[ASSUMPTION]</code> tags (FR-2, FR-3, FR-7/SM-5), all indexed in §10, no extras either direction.</li>
+        <li>ID continuity: FR-1…FR-17 contiguous (FR-11 intentionally retained-but-deferred, documented). UJ-1…UJ-3 and SM-1…SM-5 (+ SM-C1/C2) contiguous with <code>[v2]</code> deferrals clearly labeled.</li>
+        <li>The FR-17 per-source-provenance gap was found independently by both the adversarial reviewer and the edge-case hunter — a convergent signal worth treating as one fix.</li>
+      </ul>
+    </div>
+
+    <footer class="report-footer">
+      <div class="meta">
+        <span>Rubric: .agents/skills/bmad-prd/assets/prd-validation-checklist.md</span>
+        <span>Generated: 2026-07-13T00:00:00Z</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

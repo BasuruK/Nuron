@@ -1,1 +1,0 @@
-Nuron is a TypeScript ESM OpenClaw memory plugin. Current MVP is Graphiti-first and no longer supports direct Neo4j runtime connections. Core entrypoint is src/index.ts; hooks live in src/hooks.ts; tools in src/tools.ts; scoring in src/memory-scorer.ts; adapter boundary in src/adapters/memory-adapter.ts and src/adapters/graphiti-adapter.ts.
