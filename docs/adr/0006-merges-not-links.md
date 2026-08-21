@@ -32,9 +32,14 @@ creation — not a vocabulary invented ahead of the evidence.
 **Merge transaction invariants**, required before NU-010 implements the confirmation gate:
 survivor selection is deterministic, not arbitrary — the pre-existing (natural-key-matched) node
 always survives, and the newly-ingested entity's name is recorded as an alias on it, never the
-reverse. On confirm: union the two provenance ref-sets onto the survivor, add the alias, record who
-confirmed it. Re-confirming the same pair after a crash or retry must be a no-op (idempotent
-replay) — matching every other retry-safety rule in this slice (ADR-0001). Audit trail beyond "who
+reverse. On confirm, in one transaction: rewrite every inbound and outbound edge of the losing node
+to point at/from the survivor instead, union the two provenance ref-sets onto the survivor, add the
+alias, record who confirmed it, then **delete the losing node** — it is retired, not left behind as
+a zero-edge orphan. `resolve_key` (natural-key/alias lookup) only ever returns the survivor once an
+alias is recorded, so no future compile can create a fresh edge against the retired node's id.
+Re-confirming the same pair after a crash or retry must be a no-op (idempotent replay): once the
+alias exists, the losing node no longer exists to merge, so a replayed confirm has nothing left to
+retire — matching every other retry-safety rule in this slice (ADR-0001). Audit trail beyond "who
 confirmed it" and undo of a confirmed merge are both **out of scope for this slice**, not silently
 assumed: a wrong merge is corrected by a human noticing and filing a follow-up, not by a system
 rollback.

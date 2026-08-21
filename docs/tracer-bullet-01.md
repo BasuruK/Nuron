@@ -115,9 +115,14 @@ reference.
 
 **Same hash, different filename.** A second arrival of already-known bytes is a no-op per A5/A12
 regardless of filename — the second filename is never consulted, including for the parser's
-filename-date-prefix fallback. Whatever the parser derived from the *first* arrival's filename (if
-frontmatter and in-prose signature both missed) is what stands; it does not get re-derived or
-overwritten by a later arrival's filename.
+filename-date-prefix fallback. This is not a race to define away: parsing happens against an
+arrival's own filename *before* its insert, but only the arrival whose conflict-safe insert
+actually lands (`ON CONFLICT DO NOTHING`) gets to keep that parse result — a losing concurrent
+insert's parse result is simply discarded, never applied. Whichever insert wins is deterministic in
+effect (exactly one row is ever written for a given hash) even though which of several *simultaneous*
+arrivals wins isn't predictable in advance — that's fine, since by hypothesis their bytes are
+identical and the filename-date fallback is already last-resort, used only when frontmatter and
+in-prose signature both missed.
 
 **Reviewed-source contract (Compiler input).** FR-2's four-section Raw Ingest Agreement *schema*
 (Content Header / Content / Key Discoveries / Tags as a required document shape) is **superseded
@@ -139,15 +144,26 @@ from any automated transition that exhausts its retries (see Attempts). One Post
 
 **Worker claim / lease.** A worker claims a row by setting `claimed_by` + `lease_until` +
 incrementing `lease_token` in the same `UPDATE` that selects it (`WHERE state IN (…) AND
-(lease_until IS NULL OR lease_until < now())`). Every subsequent write for that unit of work — the
-state-transition `UPDATE` and every external side effect (RustFS write, Neo4j persist) — is
-conditioned on `WHERE claimed_by = <worker> AND lease_token = <token>`. This guards against a
-zombie worker: one whose lease expired and was reclaimed by another worker, but which didn't crash
-and eventually tries to write its now-stale result anyway. The token makes that write a no-op
-instead of overwriting newer work. Crashes during an external call (LlamaParse at `extracted`, LLM
-at `compiled`, embeddings at `persist`) expire the lease; another worker resumes from the persisted
-state, not from scratch. `extracted` is independently claimable — a LlamaParse failure does not
-rewind `landed`.
+(lease_until IS NULL OR lease_until < now()) AND (next_attempt_at IS NULL OR next_attempt_at <=
+now())` — dropping the backoff clause would let a worker immediately re-claim a row that just
+soft-failed and is still waiting out its `next_attempt_at`). The state-transition `UPDATE` itself
+is conditioned on `WHERE claimed_by = <worker> AND lease_token = <token>`, so a zombie worker whose
+lease was reclaimed cannot advance the row's state out from under the worker that actually holds
+the lease now.
+
+**That Postgres-level fence does not, by itself, fence the RustFS or Neo4j writes** — those systems
+know nothing about `lease_token`. It doesn't need to: the RustFS write is already
+idempotent/conditional by content hash (a zombie's write is either identical and a no-op, or loses
+a benign write-once race — never a corruption). The Neo4j write runs `plan_delta` against the
+*live* graph state at write time, not a cached snapshot, so a zombie's persist is self-correcting —
+the worker that actually wins the state-transition race computes its delta against whatever is
+already there, including anything the zombie wrote, rather than blindly overwriting it. This falls
+short of a true cross-store fencing guarantee (an idempotency key enforced by RustFS/Neo4j
+themselves, or a durable outbox with reconciliation) — accepted as a gap for this slice, given a
+single-worker-in-practice, human-gated pipeline; revisit if this ever runs multiple workers for
+real. Crashes during an external call (LlamaParse at `extracted`, LLM at `compiled`, embeddings at
+`persist`) expire the lease; another worker resumes from the persisted state, not from scratch.
+`extracted` is independently claimable — a LlamaParse failure does not rewind `landed`.
 
 **Attempts.** Each automated transition stores `attempt_count` and `next_attempt_at` (backoff).
 Soft-fail retries until `attempt_count` hits a persisted limit (default 5); then state becomes
@@ -202,7 +218,7 @@ paused.
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
 | Merge candidates | ≤5, gated on a precision bar, **default "not the same"** | Show nothing rather than weak candidates. Fatigue must produce the safe outcome. Suppress anything the natural key already auto-joined. |
 | LlamaIndex | `llama-index==0.14.23` (`llama-index-core==0.14.23`) | Pins `VectorContextRetriever.path_depth` as relation hops after the vector hit (library default is 1 = one triple). Required so A1's two-hop path is reproducible. |
-| Upload size cap | 25 MB (raw file bytes) | `upload_max_filesize=25M` caps the file itself; `post_max_size` must be set higher (e.g. `30M`) to leave headroom for multipart boundaries and other form fields, or PHP rejects a 25 MB file wrapped in a slightly-larger POST body. Mirrored in Laravel validation. Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
+| Upload size cap | 25 MB (raw file bytes) | `upload_max_filesize=26M`, `post_max_size=26M` — the file itself is capped at 25 MB by Laravel validation (`max:25600` KB); PHP's own limits are set 1 MB above that as fixed headroom for multipart boundaries and other form fields, not a config left to guess at per deployment. Rejects the request before the upload handler or `nuron-ai` extraction. Single request; multipart deferred. |
 
 ### LlamaIndex surface
 
@@ -293,16 +309,26 @@ loopback-compatible local LLM (`is_chat_model` / `is_function_calling_model` set
 structured-output check still required — reachable via a compose service name or the host-gateway
 hostname per the networking note above, not necessarily literal `127.0.0.1`) and embeddings
 replaced by a local 1024-dim model **or** a deterministic test double. **The test double must be
-content-sensitive**, not a single constant vector for every input — a fixed vector regardless of
-content would make every fixture equally "similar," collapsing the HNSW ranking A1 and A3 depend
-on. A cheap deterministic option: hash or keyword-derived features padded/truncated to 1024 dims,
-same input always producing the same vector, different inputs producing distinguishably different
-ones so B ranks near A and C does not. Dimension stays 1024 (one-way door; store the model id on
-each node). The local LLM's outputs must also be deterministic across runs — pin a fixed
-seed/temperature=0 local model with golden-tested expected output, or serve canned fixture
-responses — before treating A1–A10 as reliable with it in the loop; a model that varies its output
-run-to-run makes the offline profile flaky rather than trustworthy. LlamaParse stays off. Boot with
-`OFFLINE=1` (or equivalent) refuses a non-loopback-reachable LLM or embedding endpoint. Required
+golden, not generically derived** — a single constant vector for every input collapses the HNSW
+ranking A1/A3 depend on, and a generic hash or keyword-overlap feature vector isn't good enough
+either: C is deliberately designed to share surface tokens (auth/token/performance) with the real
+decision while being semantically unrelated, so a naive similarity formula can rank C where it
+shouldn't. Assign each fixture file (A/B/C/D) a fixed, hand-picked 1024-dim vector — same file
+always produces the same vector — chosen so that for the query under test, vector search alone
+ranks **A** top and does **not** surface **B** (forcing A1 through the graph edge, which is the
+entire point of A3's control), while **C** ranks below A but is close enough to be a plausible
+near-miss. The offline test suite must assert this ordering explicitly (A top, B absent or below
+C, C present but not top) — not just that the final answer happens to come out right, since a
+lucky final answer with the wrong ranking underneath proves nothing about A1/A3. Dimension stays
+1024 (one-way door; store the model id on each node). The local LLM's outputs must also be
+deterministic across runs — pin a fixed seed/temperature=0 local model with golden-tested expected
+output, or serve canned fixture responses — before treating A1–A10 as reliable with it in the loop;
+a model that varies its output run-to-run makes the offline profile flaky rather than
+trustworthy. LlamaParse stays off. Boot with `OFFLINE=1` (or equivalent) refuses any LLM or
+embedding endpoint that isn't a configured compose service name, the container runtime's
+host-gateway hostname, or literal loopback — i.e. anything resolving to a public address — never a
+literal-`127.0.0.1`-only check, which would wrongly reject a local LLM running as its own compose
+service (reached by service name, not loopback; see the networking note above). Required
 providers for this profile: local OpenAI-compatible LLM + local 1024-dim embedder or test double.
 A11 remains the only assertion that may call LlamaCloud.
 

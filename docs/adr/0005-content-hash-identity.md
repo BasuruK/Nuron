@@ -33,3 +33,13 @@ corrupted write *at ack time* — it is not durability and provides no protectio
 *after* a successful ack (bit rot, a RustFS bug, disk failure). RustFS is Beta and, for uploads,
 holds the only copy; that loss window is an accepted risk for this slice, not one this check
 closes.
+
+**Permanent orphans are an accepted gap, not a solved one.** Object-write-before-row-insert
+(tracer-bullet-01.md, "Write order across the Postgres/RustFS boundary") makes a *crash-window*
+orphan harmless — the next arrival of the same bytes just no-ops the write and inserts the row.
+It does not reclaim an object whose row insert never happens at all (the watched file is deleted
+before the next scan, an upload is never retried). No garbage collection exists in this slice for
+that case; a permanently-orphaned object just sits in RustFS, which one 5-file fixture corpus
+cannot make expensive enough to matter. Revisit with a reconciliation job (unreferenced-by-`content_hash`,
+past a grace period covering in-flight writes) only if real usage accumulates orphans worth
+reclaiming.
