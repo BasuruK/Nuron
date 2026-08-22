@@ -6,3 +6,7 @@
 <h2> Enterprise Agentic Memory & Knowledge for your Organization. </h2>
 
 </div>
+
+## License
+
+Copyright (c) 2026 Basuru. All Rights Reserved. No license is granted — see [LICENSE](LICENSE).
