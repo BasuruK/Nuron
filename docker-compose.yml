@@ -1,0 +1,125 @@
+# Nuron infra stack -- Postgres, Neo4j, RustFS (NU-001).
+#
+# nuron-web / nuron-api / nuron-ai are not scaffolded here: there is no application code
+# for them yet (later stories build those containers). This file stands up the three
+# stateful backends everything else depends on.
+#
+# Per docs/tracer-bullet-01.md's architecture table, all three are internal-only -- no
+# host port is published by default. Reach them with `docker compose exec` (psql /
+# cypher-shell) during development; uncomment a `ports:` block below only for local
+# debugging with a GUI client.
+#
+# Dev runtime is OrbStack. It's a drop-in Docker-compatible engine, so nothing here is
+# OrbStack-specific.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
+    # a dead container an operator notices, not restart into a silently half-initialized
+    # one -- `initdb` skips every init script on a data directory that already exists,
+    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
+    # existing operator-driven-recovery stance (no auto-resume past a failure).
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      NURON_AI_DB_PASSWORD: ${NURON_AI_DB_PASSWORD}
+      NURON_API_DB_PASSWORD: ${NURON_API_DB_PASSWORD}
+    volumes:
+      # Postgres 18+ images store data in a pg_ctlcluster-style versioned subdirectory,
+      # so the mount point is the parent dir, not .../data (docker-library/postgres#37).
+      - postgres_data:/var/lib/postgresql
+      - ./schema/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    networks:
+      - nuron
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:2026.07.1-community
+    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
+    # a dead container an operator notices, not restart into a silently half-initialized
+    # one -- `initdb` skips every init script on a data directory that already exists,
+    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
+    # existing operator-driven-recovery stance (no auto-resume past a failure).
+    restart: "no"
+    environment:
+      # Any other NEO4J_-prefixed var is converted to a config setting by the image's
+      # entrypoint, so the password only ever travels inside NEO4J_AUTH -- a second
+      # NEO4J_PASSWORD var here would be rejected at startup as an unrecognized setting.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+    volumes:
+      - neo4j_data:/data
+    # ports:
+    #   - "127.0.0.1:7474:7474"
+    #   - "127.0.0.1:7687:7687"
+    networks:
+      - nuron
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # RustFS runs as uid 10001:10001; a fresh named volume is root-owned, so it needs
+  # chowning once before rustfs can write to it (same fix RustFS's own docker-compose
+  # examples ship as a "volume-permission-helper" service).
+  rustfs-init:
+    image: alpine:3
+    command: ["chown", "-R", "10001:10001", "/data/rustfs0"]
+    volumes:
+      - rustfs_data:/data/rustfs0
+    networks:
+      - nuron
+    restart: "no"
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0-alpha.99
+    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
+    # a dead container an operator notices, not restart into a silently half-initialized
+    # one -- `initdb` skips every init script on a data directory that already exists,
+    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
+    # existing operator-driven-recovery stance (no auto-resume past a failure).
+    restart: "no"
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      RUSTFS_VOLUMES: /data/rustfs0
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+    volumes:
+      - rustfs_data:/data/rustfs0
+    # ports:
+    #   - "127.0.0.1:9001:9001"
+    networks:
+      - nuron
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+networks:
+  nuron:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  rustfs_data:
