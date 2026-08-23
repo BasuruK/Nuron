@@ -6,6 +6,16 @@ set -euo pipefail
 : "${NURON_API_DB_PASSWORD:?set NURON_API_DB_PASSWORD (see .env)}"
 : "${POSTGRES_DB:?set POSTGRES_DB (see .env)}"
 
+# Wait for schema to exist before running isolation checks
+deadline=$((SECONDS + 60))
+until docker compose exec -T postgres psql -U postgres -d "$POSTGRES_DB" -At -c "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'nuron_ai'" 2>/dev/null | grep -q 1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "FAIL: nuron_ai schema did not appear within 60s" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 output=$(docker compose exec -T \
     -e PGPASSWORD="$NURON_API_DB_PASSWORD" \
     postgres \
