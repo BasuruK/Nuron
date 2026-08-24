@@ -19,8 +19,8 @@ services:
     # schema.sql dies on first boot, PGDATA already exists, so the next start
     # skips init scripts and stays up — unhealthy because nuron_ai.documents is
     # missing. That is the tripwire, not a restart loop. Re-apply without wiping:
-    #   docker compose exec postgres psql -U $$POSTGRES_USER -d $$POSTGRES_DB \
-    #     -f /docker-entrypoint-initdb.d/01-schema.sql
+    #   docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" \
+    #     -f /docker-entrypoint-initdb.d/01-schema.sql'
     # Clean retry: docker compose down -v && docker compose up -d
     restart: unless-stopped
     environment:
@@ -39,7 +39,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0' || { echo 'nuron_ai.documents missing (init scripts skipped). Re-apply: psql -f /docker-entrypoint-initdb.d/01-schema.sql  or  docker compose down -v' >&2; exit 1; }"]
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0' || { echo 'nuron_ai.documents missing (init scripts skipped). Re-apply: psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -f /docker-entrypoint-initdb.d/01-schema.sql  or  docker compose down -v' >&2; exit 1; }"]
       interval: 5s
       timeout: 5s
       retries: 10
