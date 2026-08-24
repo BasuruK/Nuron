@@ -15,9 +15,13 @@
 services:
   postgres:
     image: postgres:18-alpine
-    # Survive OrbStack/engine restart. Healthcheck requires nuron_ai so a crash
-    # mid-initdb cannot come back "healthy": the image skips init scripts when
-    # PGDATA already exists. Fix that with `docker compose down -v`, not a reboot.
+    # unless-stopped restarts on process exit, not on healthcheck failure. If
+    # schema.sql dies on first boot, PGDATA already exists, so the next start
+    # skips init scripts and stays up — unhealthy because nuron_ai.documents is
+    # missing. That is the tripwire, not a restart loop. Re-apply without wiping:
+    #   docker compose exec postgres psql -U $$POSTGRES_USER -d $$POSTGRES_DB \
+    #     -f /docker-entrypoint-initdb.d/01-schema.sql
+    # Clean retry: docker compose down -v && docker compose up -d
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -35,7 +39,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0'"]
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0' || { echo 'nuron_ai.documents missing (init scripts skipped). Re-apply: psql -f /docker-entrypoint-initdb.d/01-schema.sql  or  docker compose down -v' >&2; exit 1; }"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -43,6 +47,10 @@ services:
 
   neo4j:
     image: neo4j:2026.07.1-community
+    # unless-stopped: same contract as postgres. cypher-shell authenticates with
+    # NEO4J_AUTH — a mid-bootstrap crash that leaves auth unusable fails this
+    # check and stays unhealthy. Docker does not restart on that. Wipe if needed:
+    # docker compose down -v && docker compose up -d
     restart: unless-stopped
     environment:
       # Any other NEO4J_-prefixed var is converted to a config setting by the image's
@@ -57,7 +65,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1'"]
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1' || { echo 'neo4j auth failed (bootstrap incomplete?). Wipe: docker compose down -v' >&2; exit 1; }"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -78,6 +86,8 @@ services:
 
   rustfs:
     image: rustfs/rustfs:1.0.0-alpha.99
+    # unless-stopped: /health is liveness after rustfs-init. A crash-loop is a
+    # process exit (Docker restarts); a live-but-broken daemon stays unhealthy.
     restart: unless-stopped
     depends_on:
       rustfs-init:
@@ -98,7 +108,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health || { echo 'rustfs /health failed. Wipe: docker compose down -v' >&2; exit 1; }"]
       interval: 10s
       timeout: 5s
       retries: 10
