@@ -15,12 +15,10 @@
 services:
   postgres:
     image: postgres:18-alpine
-    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
-    # a dead container an operator notices, not restart into a silently half-initialized
-    # one -- `initdb` skips every init script on a data directory that already exists,
-    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
-    # existing operator-driven-recovery stance (no auto-resume past a failure).
-    restart: "no"
+    # Survive OrbStack/engine restart. Healthcheck requires nuron_ai so a crash
+    # mid-initdb cannot come back "healthy": the image skips init scripts when
+    # PGDATA already exists. Fix that with `docker compose down -v`, not a reboot.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -37,7 +35,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0'"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -45,12 +43,7 @@ services:
 
   neo4j:
     image: neo4j:2026.07.1-community
-    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
-    # a dead container an operator notices, not restart into a silently half-initialized
-    # one -- `initdb` skips every init script on a data directory that already exists,
-    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
-    # existing operator-driven-recovery stance (no auto-resume past a failure).
-    restart: "no"
+    restart: unless-stopped
     environment:
       # Any other NEO4J_-prefixed var is converted to a config setting by the image's
       # entrypoint, so the password only ever travels inside NEO4J_AUTH -- a second
@@ -80,16 +73,12 @@ services:
       - rustfs_data:/data/rustfs0
     networks:
       - nuron
+    # Oneshot. unless-stopped would loop it after a successful chown.
     restart: "no"
 
   rustfs:
     image: rustfs/rustfs:1.0.0-alpha.99
-    # "no", deliberately: an init failure (e.g. schema.sql's password guard) must leave
-    # a dead container an operator notices, not restart into a silently half-initialized
-    # one -- `initdb` skips every init script on a data directory that already exists,
-    # which is exactly what a crash-and-auto-restart produces here. Matches this repo's
-    # existing operator-driven-recovery stance (no auto-resume past a failure).
-    restart: "no"
+    restart: unless-stopped
     depends_on:
       rustfs-init:
         condition: service_completed_successfully
