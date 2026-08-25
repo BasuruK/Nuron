@@ -3,8 +3,41 @@
 # Run against a stack already up: docker compose up -d postgres
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+
 : "${NURON_API_DB_PASSWORD:?set NURON_API_DB_PASSWORD (see .env)}"
 : "${POSTGRES_DB:?set POSTGRES_DB (see .env)}"
+: "${POSTGRES_USER:?set POSTGRES_USER (see .env)}"
+
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout() { gtimeout "$@"; }
+elif ! command -v timeout >/dev/null 2>&1; then
+  echo 'FAIL: GNU timeout not found. Install via: brew install coreutils' >&2
+  exit 1
+fi
+
+# Wait for nuron_ai.documents before running isolation checks.
+# Bound each probe to the remaining deadline so a hung exec cannot stall forever.
+deadline=$((SECONDS + 60))
+until
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -gt 0 ] &&
+        timeout "$remaining" docker compose exec -T postgres \
+            psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At \
+            -c "SELECT 1 FROM nuron_ai.documents LIMIT 0"
+do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "FAIL: nuron_ai.documents did not appear within 60s" >&2
+        exit 1
+    fi
+    sleep 1
+done
 
 # Wait for schema to exist before running isolation checks
 deadline=$((SECONDS + 60))
