@@ -172,3 +172,7 @@ RESET ROLE;
 -- `CREATE SCHEMA nuron_api AUTHORIZATION nuron_api_svc` above already makes the schema
 -- exist, owned by its service role, so the role/isolation boundary is real from day
 -- one without waiting on that later story.
+
+-- Last statement on purpose: compose healthcheck greps this comment as "init finished".
+-- Move it if you add objects below.
+COMMENT ON SCHEMA nuron_ai IS 'nuron NU-001 schema complete';

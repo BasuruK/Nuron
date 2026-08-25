@@ -17,8 +17,8 @@ services:
     image: postgres:18-alpine
     # unless-stopped restarts on process exit, not on healthcheck failure. If
     # schema.sql dies on first boot, PGDATA already exists, so the next start
-    # skips init scripts and stays up — unhealthy because nuron_ai.documents is
-    # missing. That is the tripwire, not a restart loop. Re-apply without wiping:
+    # skips init scripts and stays up — unhealthy because the schema-complete
+    # marker is missing. That is the tripwire, not a restart loop. Re-apply without wiping:
     #   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     #     -f /docker-entrypoint-initdb.d/01-schema.sql'
     # Clean retry wipes postgres, neo4j, AND rustfs volumes:
@@ -40,7 +40,7 @@ services:
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1 FROM nuron_ai.documents LIMIT 0' || { echo \"nuron_ai.documents missing (init scripts skipped). From host: docker compose exec postgres sh -c 'psql -U \\\"$${POSTGRES_USER}\\\" -d \\\"$${POSTGRES_DB}\\\" -f /docker-entrypoint-initdb.d/01-schema.sql'  or wipe ALL volumes (postgres, neo4j, rustfs): docker compose down -v\" >&2; exit 1; }"]
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1' >/dev/null || { echo 'postgres connection/auth/database failed' >&2; exit 1; }; psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -tAc \"SELECT 1 FROM pg_namespace WHERE nspname = 'nuron_ai' AND obj_description(oid) = 'nuron NU-001 schema complete'\" | grep -qx 1 || { echo \"schema incomplete (init skipped or partial). From host: docker compose exec postgres sh -c 'psql -U \\\"$${POSTGRES_USER}\\\" -d \\\"$${POSTGRES_DB}\\\" -f /docker-entrypoint-initdb.d/01-schema.sql'  or wipe ALL volumes (postgres, neo4j, rustfs): docker compose down -v\" >&2; exit 1; }"]
       interval: 5s
       timeout: 5s
       retries: 10
