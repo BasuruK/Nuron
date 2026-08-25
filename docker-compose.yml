@@ -19,7 +19,7 @@ services:
     # schema.sql dies on first boot, PGDATA already exists, so the next start
     # skips init scripts and stays up — unhealthy because the schema-complete
     # marker is missing. That is the tripwire, not a restart loop. Re-apply without wiping:
-    #   docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    #   docker compose exec postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     #     -f /docker-entrypoint-initdb.d/01-schema.sql'
     # Clean retry wipes postgres, neo4j, AND rustfs volumes:
     #   docker compose down -v && docker compose up -d
@@ -35,12 +35,13 @@ services:
       # so the mount point is the parent dir, not .../data (docker-library/postgres#37).
       - postgres_data:/var/lib/postgresql
       - ./schema/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./scripts/postgres-healthcheck.sh:/usr/local/bin/nuron-postgres-healthcheck:ro
     # ports:
     #   - "127.0.0.1:5432:5432"
     networks:
       - nuron
     healthcheck:
-      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1' >/dev/null || { echo 'postgres connection/auth/database failed' >&2; exit 1; }; psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -tAc \"SELECT 1 FROM pg_namespace WHERE nspname = 'nuron_ai' AND obj_description(oid) = 'nuron NU-001 schema complete'\" | grep -qx 1 || { echo \"schema incomplete (init skipped or partial). From host: docker compose exec postgres sh -c 'psql -U \\\"$${POSTGRES_USER}\\\" -d \\\"$${POSTGRES_DB}\\\" -f /docker-entrypoint-initdb.d/01-schema.sql'  or wipe ALL volumes (postgres, neo4j, rustfs): docker compose down -v\" >&2; exit 1; }"]
+      test: ["CMD", "sh", "/usr/local/bin/nuron-postgres-healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 10

@@ -173,6 +173,6 @@ RESET ROLE;
 -- exist, owned by its service role, so the role/isolation boundary is real from day
 -- one without waiting on that later story.
 
--- Last statement on purpose: compose healthcheck greps this comment as "init finished".
+-- Last statement on purpose: postgres-healthcheck.sh reads this COMMENT as "init finished".
 -- Move it if you add objects below.
 COMMENT ON SCHEMA nuron_ai IS 'nuron NU-001 schema complete';
