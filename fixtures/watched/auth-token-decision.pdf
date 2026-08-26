@@ -1,0 +1,52 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 1491 >>
+stream
+BT /F1 11 Tf 14 TL
+1 0 0 1 56 770 Tm (# Moving off server-side sessions) Tj
+1 0 0 1 56 756 Tm () Tj
+1 0 0 1 56 742 Tm (We spent most of last week on the load test results and the picture was pretty clear.) Tj
+1 0 0 1 56 728 Tm () Tj
+1 0 0 1 56 714 Tm (The session store was the bottleneck. Once we got past roughly 400 requests per second, the) Tj
+1 0 0 1 56 700 Tm (lookup on every single request started queueing and p99 latency went from 40ms to well over) Tj
+1 0 0 1 56 686 Tm (a second. Adding read replicas helped a bit but it moved the problem rather than solving it) Tj
+1 0 0 1 56 672 Tm (— we were still doing a network round trip per request just to find out who the caller was.) Tj
+1 0 0 1 56 658 Tm () Tj
+1 0 0 1 56 644 Tm (So we're dropping server-side sessions and going with stateless JWT. The token carries the) Tj
+1 0 0 1 56 630 Tm (claims we actually need, we verify the signature locally, and there's no lookup at all on) Tj
+1 0 0 1 56 616 Tm (the hot path. Refresh tokens stay server-side because we need to be able to revoke them, but) Tj
+1 0 0 1 56 602 Tm (those are touched maybe once an hour per user rather than on every request.) Tj
+1 0 0 1 56 588 Tm () Tj
+1 0 0 1 56 574 Tm (The tradeoff we're accepting is that we can't invalidate an access token before it expires.) Tj
+1 0 0 1 56 560 Tm (We're setting the access token TTL to 15 minutes to keep that window small.) Tj
+1 0 0 1 56 546 Tm () Tj
+1 0 0 1 56 532 Tm (— Basuru, 2026-05-14) Tj
+1 0 0 1 56 518 Tm () Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000338 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1881
+%%EOF
