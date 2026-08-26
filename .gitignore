@@ -3,6 +3,13 @@
 !.env.example
 node_modules/
 dist/
+
+# Python (services/nuron-ai)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
 # Letta session memory files (contain local state and potentially sensitive info)
 .letta/
 
