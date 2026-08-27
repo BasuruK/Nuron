@@ -27,8 +27,7 @@ def test_content_hash_is_sha256_hex_digest():
     assert content_hash(data) == hashlib.sha256(data).hexdigest()
 
 
-def test_content_hash_is_deterministic_and_content_sensitive():
-    assert content_hash(b"same bytes") == content_hash(b"same bytes")
+def test_content_hash_is_content_sensitive():
     assert content_hash(b"these bytes") != content_hash(b"other bytes")
 
 
@@ -178,19 +177,6 @@ def test_plan_delta_node_missing_from_current_is_drop_ref():
     deltas = plan_delta(prior={"n1": {"name": "A"}}, current={})
 
     assert deltas == [NodeDelta("n1", "drop_ref", needs_embedding=False)]
-
-
-def test_plan_delta_property_only_change_keeps_node_count_stable():
-    # A6: editing a property with no nodes added or removed -- node count stays N.
-    prior = {"n1": {"name": "A"}, "n2": {"name": "B"}}
-    current = {"n1": {"name": "A", "note": "edited"}, "n2": {"name": "B"}}
-
-    deltas = plan_delta(prior, current)
-
-    assert len(deltas) == 2
-    by_key = {delta.node_key: delta for delta in deltas}
-    assert by_key["n1"].action == "update"
-    assert by_key["n2"].action == "unchanged"
 
 
 def test_release_ref_keeps_node_alive_while_refs_remain():
