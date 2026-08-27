@@ -44,14 +44,21 @@ class ContentHeader:
 
 def parse_header(text: str, filename: str, source_owner: str | None) -> ContentHeader:
     """Extracts Subject/Author/Date/Tags: frontmatter -> in-prose signature -> filename date."""
+    text = text.replace("\r\n", "\n")
+    frontmatter_match = _FRONTMATTER_RE.match(text)
+    if frontmatter_match is None:
+        body_text = text
+    else:
+        body_text = text[frontmatter_match.end():]
     frontmatter = _parse_frontmatter(text)
-    signature = _SIGNATURE_RE.search(text)
+    last_line = text.rstrip().rsplit("\n", maxsplit=1)[-1]
+    signature = _SIGNATURE_RE.fullmatch(last_line)
 
     frontmatter_author = frontmatter.get("author")
     author: str | None
     author_source: AuthorSource
-    if isinstance(frontmatter_author, str):
-        author, author_source = frontmatter_author, "extracted"
+    if isinstance(frontmatter_author, str) and frontmatter_author.strip():
+        author, author_source = frontmatter_author.strip(), "extracted"
     elif signature is not None:
         author, author_source = signature.group(1).strip(), "extracted"
     elif source_owner:
@@ -60,10 +67,10 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
         author, author_source = None, "unknown"
 
     title = frontmatter.get("title")
-    if isinstance(title, str):
-        subject = title
+    if isinstance(title, str) and title.strip():
+        subject = title.strip()
     else:
-        heading = _H1_RE.search(text)
+        heading = _H1_RE.search(body_text)
         if heading is not None:
             subject = heading.group(1).strip()
         else:
@@ -102,6 +109,13 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
+def _unquote(value: str) -> str:
+    """Removes one matching pair of surrounding single or double quotes."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 def _parse_frontmatter(text: str) -> dict[str, str | list[str]]:
     """Parses a leading `---` block of flat `key: value` / `key: [a, b]` lines, or {} if absent."""
     match = _FRONTMATTER_RE.match(text)
@@ -117,9 +131,9 @@ def _parse_frontmatter(text: str) -> dict[str, str | list[str]]:
         value = value.strip()
         if value.startswith("[") and value.endswith("]"):
             items = value[1:-1].split(",")
-            fields[key] = [item.strip() for item in items if item.strip()]
+            fields[key] = [_unquote(item.strip()) for item in items if item.strip()]
         elif value:
-            fields[key] = value
+            fields[key] = _unquote(value)
     return fields
 
 
@@ -130,11 +144,15 @@ def normalize(name: str) -> str:
 
 def natural_key(name: str, label: str) -> str:
     """An entity's pre-human identity: normalize(name) + label."""
+    if ":" in label:
+        raise ValueError("label must not contain colons")
     return f"{normalize(name)}:{label}"
 
 
 def resolve_key(name: str, label: str, aliases: dict[tuple[str, str], str]) -> str:
     """Resolves an entity's graph key: a confirmed alias survivor, else its own natural key."""
+    if ":" in label:
+        raise ValueError("label must not contain colons")
     survivor = aliases.get((normalize(name), label))
     if survivor is not None:
         return survivor
@@ -152,6 +170,8 @@ class EntityAlias:
 
 def merge_alias(alias_name: str, label: str, survivor_name: str) -> EntityAlias:
     """Builds the alias record for a human-confirmed merge at merge gate 2."""
+    if ":" in label:
+        raise ValueError("label must not contain colons")
     return EntityAlias(
         alias_key=normalize(alias_name),
         label=label,

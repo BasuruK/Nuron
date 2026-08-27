@@ -2,6 +2,8 @@ import hashlib
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from nuron_ai.core import (
     EntityAlias,
     NodeDelta,
@@ -61,6 +63,19 @@ def test_parse_header_reads_frontmatter_title_and_tags():
     assert header.author_source == "unknown"
 
 
+def test_parse_header_unquotes_frontmatter_title_and_tags():
+    text = (
+        "---\n"
+        'title: "My Note"\n'
+        "tags: [\"foo\", 'bar']\n"
+        "---\n"
+    )
+    header = parse_header(text, filename="note.md", source_owner=None)
+
+    assert header.subject == "My Note"
+    assert header.tags == ["foo", "bar"]
+
+
 def test_parse_header_frontmatter_author_wins_over_signature():
     text = (
         "---\n"
@@ -84,6 +99,53 @@ def test_parse_header_signature_survives_en_dash_from_markdown_conversion():
     assert header.author == "Signature Author"
     assert header.author_source == "extracted"
     assert header.timestamp == date(2026, 1, 1)
+
+
+def test_parse_header_reads_frontmatter_and_signature_from_crlf_text():
+    text = (
+        "---\r\n"
+        "title: CRLF Notes\r\n"
+        "tags: [one, two]\r\n"
+        "---\r\n"
+        "Body.\r\n\r\n"
+        "— Basuru, 2025-03-02\r\n"
+    )
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.subject == "CRLF Notes"
+    assert header.tags == ["one", "two"]
+    assert header.author == "Basuru"
+    assert header.author_source == "extracted"
+    assert header.timestamp == date(2025, 3, 2)
+
+
+def test_parse_header_blank_frontmatter_author_falls_back_to_signature():
+    text = '---\nauthor: "   "\n---\n— Real Author, 2026-01-01\n'
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.author == "Real Author"
+    assert header.author_source == "extracted"
+
+
+def test_parse_header_ignores_frontmatter_comments_when_resolving_subject():
+    text = "---\n# Notes\n---\n# Real Heading\n"
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.subject == "Real Heading"
+
+
+def test_parse_header_uses_only_final_non_empty_line_as_signature():
+    text = (
+        "# Notes\n\n"
+        "- meeting with John, 2026-01-15\n\n"
+        "Body.\n\n"
+        "- Real Author, 2026-02-20\n\n"
+    )
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.author == "Real Author"
+    assert header.author_source == "extracted"
+    assert header.timestamp == date(2026, 2, 20)
 
 
 def test_parse_header_falls_back_to_source_owner_when_undocumented():
@@ -137,6 +199,23 @@ def test_normalize_does_not_merge_different_referents():
 
 def test_natural_key_combines_normalized_name_and_label():
     assert natural_key("Session Store", "ENTITY") == "session store:ENTITY"
+
+
+def test_natural_key_rejects_colon_in_label():
+    with pytest.raises(ValueError, match="colon"):
+        natural_key("Session Store", "ENTITY:SUBTYPE")
+
+
+def test_resolve_key_rejects_colon_in_label_before_alias_lookup():
+    aliases = {("session store", "ENTITY:SUBTYPE"): "existing-key"}
+
+    with pytest.raises(ValueError, match="colon"):
+        resolve_key("Session Store", "ENTITY:SUBTYPE", aliases)
+
+
+def test_merge_alias_rejects_colon_in_label():
+    with pytest.raises(ValueError, match="colon"):
+        merge_alias("Sessions Table", "ENTITY:SUBTYPE", "Session Store")
 
 
 def test_resolve_key_falls_back_to_natural_key_without_alias():
