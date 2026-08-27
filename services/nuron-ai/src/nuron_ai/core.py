@@ -71,15 +71,15 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
 
     frontmatter_date = frontmatter.get("date")
     if isinstance(frontmatter_date, str):
-        timestamp = date.fromisoformat(frontmatter_date)
-    elif signature is not None:
-        timestamp = date.fromisoformat(signature.group(2))
+        timestamp = _parse_date(frontmatter_date)
     else:
+        timestamp = None
+    if timestamp is None and signature is not None:
+        timestamp = _parse_date(signature.group(2))
+    if timestamp is None:
         filename_match = _FILENAME_DATE_RE.search(filename)
         if filename_match is not None:
-            timestamp = date.fromisoformat(filename_match.group(1))
-        else:
-            timestamp = None
+            timestamp = _parse_date(filename_match.group(1))
 
     tags = frontmatter.get("tags", [])
     if not isinstance(tags, list):
@@ -92,6 +92,14 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
         timestamp=timestamp,
         tags=tags,
     )
+
+
+def _parse_date(value: str) -> date | None:
+    """Returns an ISO date, or None when the value is not a calendar date."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _parse_frontmatter(text: str) -> dict[str, str | list[str]]:
@@ -167,7 +175,8 @@ def plan_delta(
     """Classifies each node this document contributes: add, update, unchanged, or drop_ref."""
     deltas: list[NodeDelta] = []
 
-    for node_key, properties in current.items():
+    for node_key in sorted(current):
+        properties = current[node_key]
         if node_key not in prior:
             deltas.append(NodeDelta(node_key, "add", needs_embedding=True))
         elif prior[node_key] != properties:
@@ -175,7 +184,7 @@ def plan_delta(
         else:
             deltas.append(NodeDelta(node_key, "unchanged", needs_embedding=False))
 
-    for node_key in prior:
+    for node_key in sorted(prior):
         if node_key not in current:
             deltas.append(NodeDelta(node_key, "drop_ref", needs_embedding=False))
 

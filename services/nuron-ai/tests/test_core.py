@@ -101,6 +101,20 @@ def test_parse_header_falls_back_to_filename_date():
     assert header.timestamp == date(2025, 3, 2)
 
 
+def test_parse_header_invalid_frontmatter_date_falls_back_to_signature():
+    text = "---\ndate: 2025-02-30\n---\n\n— Author, 2025-03-02\n"
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.timestamp == date(2025, 3, 2)
+
+
+def test_parse_header_invalid_filename_date_leaves_timestamp_blank():
+    text = "# Some Notes\n\nNo dates in the body or frontmatter.\n"
+    header = parse_header(text, filename="notes-2025-02-30.md", source_owner=None)
+
+    assert header.timestamp is None
+
+
 def test_parse_header_never_consults_mtime_leaves_blank_when_nothing_matches():
     text = "# Some Notes\n\nNothing to extract.\n"
     header = parse_header(text, filename="notes.md", source_owner=None)
@@ -177,6 +191,34 @@ def test_plan_delta_node_missing_from_current_is_drop_ref():
     deltas = plan_delta(prior={"n1": {"name": "A"}}, current={})
 
     assert deltas == [NodeDelta("n1", "drop_ref", needs_embedding=False)]
+
+
+def test_plan_delta_is_independent_of_mapping_insertion_order():
+    prior = {
+        "drop-b": {},
+        "drop-a": {},
+        "shared": {"name": "Same"},
+    }
+    current = {
+        "add-b": {},
+        "add-a": {},
+        "shared": {"name": "Same"},
+    }
+    reordered_prior = {
+        "shared": {"name": "Same"},
+        "drop-a": {},
+        "drop-b": {},
+    }
+    reordered_current = {
+        "shared": {"name": "Same"},
+        "add-a": {},
+        "add-b": {},
+    }
+
+    assert plan_delta(prior, current) == plan_delta(
+        reordered_prior,
+        reordered_current,
+    )
 
 
 def test_release_ref_keeps_node_alive_while_refs_remain():
