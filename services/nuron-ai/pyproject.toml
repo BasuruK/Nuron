@@ -7,7 +7,10 @@ authors = [
     { name = "Basuru Balasuriya", email = "bestbasuru@live.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fsspec>=2026.7.0",
+    "s3fs>=2026.7.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12.0"]
@@ -18,3 +21,8 @@ dev = [
     "mypy>=2.3.1",
     "pytest>=9.1.1",
 ]
+
+[[tool.mypy.overrides]]
+# fsspec ships no py.typed marker; nothing to check against.
+module = ["fsspec.*"]
+ignore_missing_imports = true
