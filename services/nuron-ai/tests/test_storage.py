@@ -1,10 +1,11 @@
 import hashlib
 import os
+from collections.abc import Iterator
 
 import fsspec
 import pytest
 
-from nuron_ai.storage import CorruptedWriteError, ObjectStorage, from_env
+from nuron_ai.storage import CorruptedWriteError, ObjectStorage, from_uri
 
 # -- fast logic tests, against an in-memory filesystem -----------------------
 
@@ -64,13 +65,23 @@ def test_put_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorag
 
 
 @pytest.fixture(scope="module")
-def rustfs_storage() -> ObjectStorage:
+def rustfs_storage() -> Iterator[ObjectStorage]:
+    if not os.environ.get("RUSTFS_INTEGRATION_TESTS"):
+        pytest.skip("RUSTFS_INTEGRATION_TESTS not set -- skipping RustFS integration tests")
+
+    # A dedicated prefix, never the configured root, so a run can't touch or
+    # orphan real content; teardown below wipes exactly this subtree afterward.
+    storage = from_uri(
+        f"{os.environ['RUSTFS_URI']}/pytest-integration",
+        endpoint_url=os.environ["RUSTFS_ENDPOINT_URL"],
+        key=os.environ["RUSTFS_ACCESS_KEY"],
+        secret=os.environ["RUSTFS_SECRET_KEY"],
+    )
     try:
-        return from_env()
-    except KeyError as exc:
-        pytest.skip(f"RustFS not configured: missing env var {exc}")
-    except Exception as exc:  # RustFS not reachable (compose stack not running)
-        pytest.skip(f"RustFS unreachable: {exc}")
+        yield storage
+    finally:
+        if storage.fs.exists(storage.root):
+            storage.fs.rm(storage.root, recursive=True)
 
 
 def test_rustfs_round_trip_returns_identical_bytes_with_hash_matching_key(
