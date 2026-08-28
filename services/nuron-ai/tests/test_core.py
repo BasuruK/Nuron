@@ -76,6 +76,17 @@ def test_parse_header_unquotes_frontmatter_title_and_tags():
     assert header.tags == ["foo", "bar"]
 
 
+def test_parse_header_preserves_commas_inside_quoted_tags():
+    text = (
+        "---\n"
+        'tags: ["foo, bar", \'baz, qux\', plain]\n'
+        "---\n"
+    )
+    header = parse_header(text, filename="notes.md", source_owner=None)
+
+    assert header.tags == ["foo, bar", "baz, qux", "plain"]
+
+
 def test_parse_header_frontmatter_author_wins_over_signature():
     text = (
         "---\n"

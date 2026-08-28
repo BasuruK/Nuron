@@ -6,6 +6,7 @@ Pure functions only -- no network, no database, no LLM. See CONTEXT.md and docs/
 
 import hashlib
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -50,7 +51,7 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
         body_text = text
     else:
         body_text = text[frontmatter_match.end():]
-    frontmatter = _parse_frontmatter(text)
+    frontmatter = _parse_frontmatter(frontmatter_match)
     last_line = text.rstrip().rsplit("\n", maxsplit=1)[-1]
     signature = _SIGNATURE_RE.fullmatch(last_line)
 
@@ -116,9 +117,8 @@ def _unquote(value: str) -> str:
     return value
 
 
-def _parse_frontmatter(text: str) -> dict[str, str | list[str]]:
-    """Parses a leading `---` block of flat `key: value` / `key: [a, b]` lines, or {} if absent."""
-    match = _FRONTMATTER_RE.match(text)
+def _parse_frontmatter(match: re.Match[str] | None) -> dict[str, str | list[str]]:
+    """Parses flat `key: value` / `key: [a, b]` fields from matched frontmatter."""
     if match is None:
         return {}
 
@@ -130,8 +130,11 @@ def _parse_frontmatter(text: str) -> dict[str, str | list[str]]:
         key = key.strip()
         value = value.strip()
         if value.startswith("[") and value.endswith("]"):
-            items = value[1:-1].split(",")
-            fields[key] = [_unquote(item.strip()) for item in items if item.strip()]
+            items = shlex.shlex(value[1:-1], posix=True)
+            items.whitespace = ","
+            items.whitespace_split = True
+            items.commenters = ""
+            fields[key] = [item.strip() for item in items if item.strip()]
         elif value:
             fields[key] = _unquote(value)
     return fields
