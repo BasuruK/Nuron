@@ -11,7 +11,6 @@ from nuron_ai.core import (
     merge_alias,
     natural_key,
     normalize,
-    object_key,
     parse_header,
     plan_delta,
     release_ref,
@@ -21,7 +20,7 @@ from nuron_ai.core import (
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "watched"
 
 
-# -- content_hash / object_key -------------------------------------------------
+# -- content_hash ---------------------------------------------------------------
 
 
 def test_content_hash_is_sha256_hex_digest():
@@ -31,11 +30,6 @@ def test_content_hash_is_sha256_hex_digest():
 
 def test_content_hash_is_content_sensitive():
     assert content_hash(b"these bytes") != content_hash(b"other bytes")
-
-
-def test_object_key_is_two_char_prefix_then_full_digest():
-    digest = content_hash(b"some file contents")
-    assert object_key(digest) == f"{digest[:2]}/{digest}"
 
 
 # -- parse_header ---------------------------------------------------------------
@@ -230,9 +224,7 @@ def test_merge_alias_rejects_colon_in_label():
 
 
 def test_resolve_key_falls_back_to_natural_key_without_alias():
-    assert resolve_key("Session Store", "ENTITY", aliases={}) == natural_key(
-        "Session Store", "ENTITY"
-    )
+    assert resolve_key("Session Store", "ENTITY", aliases={}) == "session store:ENTITY"
 
 
 def test_resolve_key_uses_confirmed_alias_survivor():

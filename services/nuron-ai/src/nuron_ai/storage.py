@@ -5,6 +5,7 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 """
 
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 
 import fsspec
@@ -29,13 +30,21 @@ class ObjectStorage:
         digest = content_hash(data)
         key = object_key(digest)
         path = f"{self.root}/{key}"
-        if not self.fs.exists(path):
-            with self.fs.open(path, "wb") as handle:
-                handle.write(data)
-        stored = self.get(key)
-        if content_hash(stored) != digest:
-            raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
-        return key
+        wrote = False
+        try:
+            if not self.fs.exists(path):
+                wrote = True
+                with self.fs.open(path, "wb") as handle:
+                    handle.write(data)
+            stored = self.get(key)
+            if content_hash(stored) != digest:
+                raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
+            return key
+        except Exception:
+            if wrote:
+                with suppress(Exception):
+                    self.fs.rm(path)
+            raise
 
     def get(self, key: str) -> bytes:
         """Reads back the bytes stored at key."""

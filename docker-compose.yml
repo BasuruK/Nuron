@@ -106,9 +106,7 @@ services:
     volumes:
       - rustfs_data:/data/rustfs0
     ports:
-      # S3 API, published unlike the other internal-only services: nuron-ai has no
-      # container of its own yet, so it reaches RustFS from the host network (NU-004).
-      # Revisit once nuron-ai joins the `nuron` network and can use the service name instead.
+      # ponytail: host-published S3 until nuron-ai joins the `nuron` network (NU-004).
       - "127.0.0.1:9000:9000"
     # Console UI -- uncomment only for local debugging with a GUI client.
     # ports:
