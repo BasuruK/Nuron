@@ -5,6 +5,7 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 """
 
 import os
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -26,30 +27,43 @@ class ObjectStorage:
     root: str
 
     def put(self, data: bytes) -> str:
-        """Writes data under its content-hash key if absent; verifies by read-back before returning."""
+        """Stages bytes at a request-unique key, then publishes to the hash path if absent."""
         digest = content_hash(data)
         key = object_key(digest)
         path = f"{self.root}/{key}"
-        wrote = False
+        if self.fs.exists(path):
+            return self._ack(key, digest)
+
+        staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
+        staging = f"{staging_root}/{key}"
         try:
-            if not self.fs.exists(path):
-                wrote = True
-                with self.fs.open(path, "wb") as handle:
-                    handle.write(data)
-            stored = self.get(key)
-            if content_hash(stored) != digest:
+            with self.fs.open(staging, "wb") as handle:
+                handle.write(data)
+            with self.fs.open(staging, "rb") as handle:
+                staged = handle.read()
+            if content_hash(staged) != digest:
                 raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
-            return key
-        except Exception:
-            if wrote:
-                with suppress(Exception):
-                    self.fs.rm(path)
-            raise
+            try:
+                self.fs.pipe_file(path, staged, mode="create")
+            except FileExistsError:
+                pass
+            return self._ack(key, digest)
+        finally:
+            with suppress(Exception):
+                if self.fs.exists(staging_root):
+                    self.fs.rm(staging_root, recursive=True)
 
     def get(self, key: str) -> bytes:
         """Reads back the bytes stored at key."""
         with self.fs.open(f"{self.root}/{key}", "rb") as handle:
             return handle.read()
+
+    def _ack(self, key: str, digest: str) -> str:
+        """Returns key if the published object hashes to digest; never deletes it on mismatch."""
+        stored = self.get(key)
+        if content_hash(stored) != digest:
+            raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
+        return key
 
 
 def from_uri(uri: str, **storage_options: object) -> ObjectStorage:

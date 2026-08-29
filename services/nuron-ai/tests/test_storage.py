@@ -2,6 +2,7 @@ import hashlib
 import os
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import fsspec
 import pytest
@@ -9,6 +10,13 @@ import pytest
 from nuron_ai.storage import CorruptedWriteError, ObjectStorage, from_uri
 
 # -- fast logic tests, against an in-memory filesystem -----------------------
+
+
+def _staging_files(storage: ObjectStorage) -> list[str]:
+    staging = f"{storage.root}/.staging"
+    if not storage.fs.exists(staging):
+        return []
+    return storage.fs.find(staging)
 
 
 @pytest.fixture
@@ -95,6 +103,87 @@ def test_put_retries_after_failed_write(
     monkeypatch.setattr(memory_storage.fs, "open", original_open)
     key = memory_storage.put(data)
     assert memory_storage.get(key) == data
+
+
+def test_failed_put_does_not_delete_another_writers_published_object(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"survivor"
+    key = memory_storage.put(data)
+    published = f"{memory_storage.root}/{key}"
+    original_exists = memory_storage.fs.exists
+    original_open = memory_storage.fs.open
+
+    def exists_hiding_published(path: str) -> bool:
+        if path == published:
+            return False
+        return original_exists(path)
+
+    def fail_on_write(path: str, mode: str = "rb", **kwargs: object) -> object:
+        if "w" in mode:
+            raise OSError("write failed")
+        return original_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "exists", exists_hiding_published)
+    monkeypatch.setattr(memory_storage.fs, "open", fail_on_write)
+
+    with pytest.raises(OSError, match="write failed"):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "exists", original_exists)
+    monkeypatch.setattr(memory_storage.fs, "open", original_open)
+    assert memory_storage.get(key) == data
+    assert _staging_files(memory_storage) == []
+
+
+def test_failed_staging_write_leaves_no_staging_object(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"no leftovers"
+    original_open = memory_storage.fs.open
+
+    def fail_on_write(path: str, mode: str = "rb", **kwargs: object) -> object:
+        if "w" in mode:
+            handle = original_open(path, mode, **kwargs)
+
+            class Boom:
+                def write(self, _data: bytes) -> int:
+                    handle.write(b"partial")
+                    raise OSError("staging blip")
+
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    handle.close()
+
+            return Boom()
+        return original_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "open", fail_on_write)
+    with pytest.raises(OSError, match="staging blip"):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "open", original_open)
+    assert _staging_files(memory_storage) == []
+    digest = hashlib.sha256(data).hexdigest()
+    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    assert not memory_storage.fs.exists(published)
+
+
+def test_concurrent_puts_of_same_bytes_keep_published_object(
+    memory_storage: ObjectStorage,
+) -> None:
+    data = os.urandom(256)
+    digest = hashlib.sha256(data).hexdigest()
+    expected_key = f"{digest[:2]}/{digest}"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        keys = list(pool.map(lambda _: memory_storage.put(data), range(8)))
+
+    assert keys == [expected_key] * 8
+    assert memory_storage.get(expected_key) == data
+    assert _staging_files(memory_storage) == []
 
 
 # -- round-trip test against the compose RustFS (issue #18 definition of done) ----
