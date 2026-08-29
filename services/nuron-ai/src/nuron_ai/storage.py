@@ -14,9 +14,15 @@ from fsspec.spec import AbstractFileSystem
 
 from nuron_ai.core import content_hash, object_key
 
+_REMOVE_ATTEMPTS = 3
+
 
 class CorruptedWriteError(RuntimeError):
     """Raised when a stored object's read-back hash does not match what was put."""
+
+
+class CleanupError(RuntimeError):
+    """Raised when a failed put cannot remove the object this call created."""
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,7 @@ class ObjectStorage:
 
         staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
         staging = f"{staging_root}/{key}"
+        created = False
         try:
             with self.fs.open(staging, "wb") as handle:
                 handle.write(data)
@@ -47,11 +54,20 @@ class ObjectStorage:
                 self.fs.pipe_file(path, staged, mode="create")
             except FileExistsError:
                 pass
-            return self._ack(key, digest)
-        finally:
-            with suppress(Exception):
-                if self.fs.exists(staging_root):
-                    self.fs.rm(staging_root, recursive=True)
+            else:
+                created = True
+            acked = self._ack(key, digest)
+        except Exception as err:
+            try:
+                if created:
+                    self._remove(path)
+                self._remove(staging_root)
+            except Exception:
+                raise CleanupError(f"failed to remove objects for key {key!r}") from err
+            raise
+        with suppress(Exception):
+            self._remove(staging_root)
+        return acked
 
     def get(self, key: str) -> bytes:
         """Reads back the bytes stored at key."""
@@ -64,6 +80,19 @@ class ObjectStorage:
         if content_hash(stored) != digest:
             raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
         return key
+
+    def _remove(self, path: str) -> None:
+        """Deletes path if present; retries on failure, then raises the last error."""
+        last: Exception | None = None
+        for _ in range(_REMOVE_ATTEMPTS):
+            try:
+                if self.fs.exists(path):
+                    self.fs.rm(path, recursive=True)
+                return
+            except Exception as err:
+                last = err
+        assert last is not None
+        raise last
 
 
 def from_uri(uri: str, **storage_options: object) -> ObjectStorage:

@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import fsspec
 import pytest
 
-from nuron_ai.storage import CorruptedWriteError, ObjectStorage, from_uri
+from nuron_ai.storage import CleanupError, CorruptedWriteError, ObjectStorage, from_uri
 
 # -- fast logic tests, against an in-memory filesystem -----------------------
 
@@ -184,6 +184,121 @@ def test_concurrent_puts_of_same_bytes_keep_published_object(
     assert keys == [expected_key] * 8
     assert memory_storage.get(expected_key) == data
     assert _staging_files(memory_storage) == []
+
+
+def test_failed_ack_of_owned_create_removes_object_so_retry_recovers(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"owned create"
+    digest = hashlib.sha256(data).hexdigest()
+    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    original_open = memory_storage.fs.open
+
+    def corrupt_published_read(path: str, mode: str = "rb", **kwargs: object) -> object:
+        handle = original_open(path, mode, **kwargs)
+        if path == published and "r" in mode and "w" not in mode:
+
+            class Bad:
+                def read(self) -> bytes:
+                    return b"garbage"
+
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    handle.close()
+
+            return Bad()
+        return handle
+
+    monkeypatch.setattr(memory_storage.fs, "open", corrupt_published_read)
+    with pytest.raises(CorruptedWriteError):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "open", original_open)
+    assert not memory_storage.fs.exists(published)
+    key = memory_storage.put(data)
+    assert memory_storage.get(key) == data
+
+
+def test_cleanup_retries_rm_then_propagates_write_error(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"retry cleanup"
+    original_open = memory_storage.fs.open
+    original_rm = memory_storage.fs.rm
+    rm_calls = {"n": 0}
+
+    def fail_on_write(path: str, mode: str = "rb", **kwargs: object) -> object:
+        if "w" in mode:
+            handle = original_open(path, mode, **kwargs)
+
+            class Boom:
+                def write(self, _data: bytes) -> int:
+                    handle.write(b"partial")
+                    raise OSError("staging blip")
+
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    handle.close()
+
+            return Boom()
+        return original_open(path, mode, **kwargs)
+
+    def flaky_rm(path: str, *args: object, **kwargs: object) -> object:
+        rm_calls["n"] += 1
+        if rm_calls["n"] < 3:
+            raise OSError("rm blip")
+        return original_rm(path, *args, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "open", fail_on_write)
+    monkeypatch.setattr(memory_storage.fs, "rm", flaky_rm)
+    with pytest.raises(OSError, match="staging blip"):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "open", original_open)
+    monkeypatch.setattr(memory_storage.fs, "rm", original_rm)
+    assert _staging_files(memory_storage) == []
+    key = memory_storage.put(data)
+    assert memory_storage.get(key) == data
+
+
+def test_cleanup_exhausted_raises_cleanup_error_from_write_error(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"cleanup exhausted"
+    original_open = memory_storage.fs.open
+
+    def fail_on_write(path: str, mode: str = "rb", **kwargs: object) -> object:
+        if "w" in mode:
+            handle = original_open(path, mode, **kwargs)
+
+            class Boom:
+                def write(self, _data: bytes) -> int:
+                    handle.write(b"partial")
+                    raise OSError("staging blip")
+
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    handle.close()
+
+            return Boom()
+        return original_open(path, mode, **kwargs)
+
+    def fail_rm(*_args: object, **_kwargs: object) -> None:
+        raise OSError("rm failed")
+
+    monkeypatch.setattr(memory_storage.fs, "open", fail_on_write)
+    monkeypatch.setattr(memory_storage.fs, "rm", fail_rm)
+    with pytest.raises(CleanupError) as caught:
+        memory_storage.put(data)
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert "staging blip" in str(caught.value.__cause__)
 
 
 # -- round-trip test against the compose RustFS (issue #18 definition of done) ----
