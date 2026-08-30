@@ -22,7 +22,7 @@ def _staging_files(storage: ObjectStorage) -> list[str]:
 @pytest.fixture
 def memory_storage() -> ObjectStorage:
     fs = fsspec.filesystem("memory")
-    return ObjectStorage(fs=fs, root="/nuron-test")
+    return ObjectStorage(fs=fs, root=f"/nuron-test/{uuid.uuid4().hex}")
 
 
 def test_put_returns_key_matching_content_hash(memory_storage: ObjectStorage) -> None:
@@ -68,6 +68,18 @@ def test_put_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorag
 
     with pytest.raises(CorruptedWriteError):
         memory_storage.put(data)
+
+
+def test_get_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorage) -> None:
+    data = b"get corruption probe"
+    key = memory_storage.put(data)
+    memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", b"corrupted garbage")
+
+    with pytest.raises(CorruptedWriteError):
+        memory_storage.get(key)
+
+    memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", data)
+    assert memory_storage.get(key) == data
 
 
 def test_put_retries_after_failed_write(
@@ -221,7 +233,7 @@ def test_failed_ack_of_owned_create_removes_object_so_retry_recovers(
     assert memory_storage.get(key) == data
 
 
-def test_failed_publish_removes_partial_object_so_retry_recovers(
+def test_failed_exclusive_create_leaves_no_object_so_retry_recovers(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = b"partial publish"
@@ -229,15 +241,14 @@ def test_failed_publish_removes_partial_object_so_retry_recovers(
     published = f"{memory_storage.root}/{digest[:2]}/{digest}"
     original_pipe = memory_storage.fs.pipe_file
 
-    def boom_after_partial(
+    def boom_on_create(
         path: str, value: bytes, mode: str = "overwrite", **kwargs: object
     ) -> object:
         if path == published and mode == "create":
-            original_pipe(path, b"partial garbage", mode="overwrite")
             raise OSError("network blip")
         return original_pipe(path, value, mode=mode, **kwargs)
 
-    monkeypatch.setattr(memory_storage.fs, "pipe_file", boom_after_partial)
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", boom_on_create)
     with pytest.raises(OSError, match="network blip"):
         memory_storage.put(data)
 
@@ -245,6 +256,43 @@ def test_failed_publish_removes_partial_object_so_retry_recovers(
     assert not memory_storage.fs.exists(published)
     key = memory_storage.put(data)
     assert memory_storage.get(key) == data
+
+
+def test_failed_concurrent_publish_does_not_remove_winner(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"winner stays"
+    digest = hashlib.sha256(data).hexdigest()
+    key = f"{digest[:2]}/{digest}"
+    published = f"{memory_storage.root}/{key}"
+    original_exists = memory_storage.fs.exists
+    original_pipe = memory_storage.fs.pipe_file
+    hidden = {"used": False}
+
+    memory_storage.put(data)
+
+    def exists_hide_first_published(path: str) -> bool:
+        if path == published and not hidden["used"]:
+            hidden["used"] = True
+            return False
+        return original_exists(path)
+
+    def fail_second_create(
+        path: str, value: bytes, mode: str = "overwrite", **kwargs: object
+    ) -> object:
+        if path == published and mode == "create":
+            raise OSError("loser publish failed")
+        return original_pipe(path, value, mode=mode, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "exists", exists_hide_first_published)
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", fail_second_create)
+    with pytest.raises(OSError, match="loser publish failed"):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "exists", original_exists)
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", original_pipe)
+    assert memory_storage.get(key) == data
+    assert _staging_files(memory_storage) == []
 
 
 def test_cleanup_retries_rm_then_propagates_write_error(
@@ -291,7 +339,7 @@ def test_cleanup_retries_rm_then_propagates_write_error(
     assert memory_storage.get(key) == data
 
 
-def test_cleanup_exhausted_raises_cleanup_error_from_write_error(
+def test_cleanup_exhausted_raises_cleanup_error_from_rm_failure(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = b"cleanup exhausted"
@@ -324,7 +372,79 @@ def test_cleanup_exhausted_raises_cleanup_error_from_write_error(
         memory_storage.put(data)
 
     assert isinstance(caught.value.__cause__, OSError)
-    assert "staging blip" in str(caught.value.__cause__)
+    assert "rm failed" in str(caught.value.__cause__)
+    assert "rm failed" in str(caught.value)
+    assert isinstance(caught.value.__context__, OSError)
+    assert "staging blip" in str(caught.value.__context__)
+
+
+def test_successful_publish_cleanup_failure_raises_cleanup_error(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"published"
+    digest = hashlib.sha256(data).hexdigest()
+    key = f"{digest[:2]}/{digest}"
+    original_rm = memory_storage.fs.rm
+
+    def fail_staging_rm(path: str, *args: object, **kwargs: object) -> object:
+        if ".staging" in path:
+            raise OSError("staging rm failed")
+        return original_rm(path, *args, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "rm", fail_staging_rm)
+    with pytest.raises(CleanupError) as caught:
+        memory_storage.put(data)
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert "staging rm failed" in str(caught.value.__cause__)
+    assert "staging rm failed" in str(caught.value)
+    monkeypatch.setattr(memory_storage.fs, "rm", original_rm)
+    assert memory_storage.get(key) == data
+
+
+def test_published_cleanup_failure_still_removes_staging(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"published cleanup probe"
+    digest = hashlib.sha256(data).hexdigest()
+    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    original_open = memory_storage.fs.open
+    original_rm = memory_storage.fs.rm
+
+    def corrupt_published_read(path: str, mode: str = "rb", **kwargs: object) -> object:
+        handle = original_open(path, mode, **kwargs)
+        if path == published and "r" in mode and "w" not in mode:
+
+            class Bad:
+                def read(self) -> bytes:
+                    return b"garbage"
+
+                def __enter__(self) -> object:
+                    return self
+
+                def __exit__(self, *_args: object) -> None:
+                    handle.close()
+
+            return Bad()
+        return handle
+
+    def fail_published_rm(path: str, *args: object, **kwargs: object) -> object:
+        if path == published:
+            raise OSError("published rm failed")
+        return original_rm(path, *args, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "open", corrupt_published_read)
+    monkeypatch.setattr(memory_storage.fs, "rm", fail_published_rm)
+    with pytest.raises(CleanupError) as caught:
+        memory_storage.put(data)
+
+    assert "published rm failed" in str(caught.value)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert "published rm failed" in str(caught.value.__cause__)
+    monkeypatch.setattr(memory_storage.fs, "open", original_open)
+    monkeypatch.setattr(memory_storage.fs, "rm", original_rm)
+    assert _staging_files(memory_storage) == []
+    assert memory_storage.fs.exists(published)
 
 
 # -- round-trip test against the compose RustFS (issue #18 definition of done) ----

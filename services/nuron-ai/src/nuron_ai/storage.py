@@ -6,7 +6,6 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 
 import os
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass
 
 import fsspec
@@ -22,7 +21,7 @@ class CorruptedWriteError(RuntimeError):
 
 
 class CleanupError(RuntimeError):
-    """Raised when a failed put cannot remove the object this call created."""
+    """Raised when put cannot remove objects this call created."""
 
 
 @dataclass(frozen=True)
@@ -51,28 +50,45 @@ class ObjectStorage:
             if content_hash(staged) != digest:
                 raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
             try:
-                # Own dest cleanup unless exclusive-create lost the race.
-                created = True
+                # s3fs mode="create" is If-None-Match *; own dest cleanup only if we won.
                 self.fs.pipe_file(path, staged, mode="create")
+                created = True
             except FileExistsError:
                 created = False
             acked = self._ack(key, digest)
-        except Exception as err:
-            try:
-                if created:
+        except Exception:
+            failures: list[Exception] = []
+            if created:
+                try:
                     self._remove(path)
+                except Exception as remove_err:
+                    failures.append(remove_err)
+            try:
                 self._remove(staging_root)
-            except Exception:
-                raise CleanupError(f"failed to remove objects for key {key!r}") from err
+            except Exception as remove_err:
+                failures.append(remove_err)
+            if failures:
+                details = "; ".join(str(e) for e in failures)
+                raise CleanupError(
+                    f"failed to remove objects for key {key!r}: {details}"
+                ) from failures[0]
             raise
-        with suppress(Exception):
+        try:
             self._remove(staging_root)
+        except Exception as err:
+            raise CleanupError(
+                f"failed to remove objects for key {key!r}: {err}"
+            ) from err
         return acked
 
     def get(self, key: str) -> bytes:
-        """Reads back the bytes stored at key."""
+        """Reads bytes at key; raises if they don't hash to the digest encoded in key."""
         with self.fs.open(f"{self.root}/{key}", "rb") as handle:
-            return handle.read()
+            data = handle.read()
+        digest = key.rsplit("/", 1)[-1]
+        if content_hash(data) != digest:
+            raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
+        return data
 
     def _ack(self, key: str, digest: str) -> str:
         """Returns key if the published object hashes to digest; never deletes it on mismatch."""
