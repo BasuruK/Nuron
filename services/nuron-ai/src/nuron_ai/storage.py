@@ -37,7 +37,7 @@ class ObjectStorage:
         key = object_key(digest)
         path = f"{self.root}/{key}"
         if self.fs.exists(path):
-            return self._ack(key, digest)
+            return self._ack(key)
 
         staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
         staging = f"{staging_root}/{key}"
@@ -55,7 +55,7 @@ class ObjectStorage:
                 created = True
             except FileExistsError:
                 created = False
-            acked = self._ack(key, digest)
+            acked = self._ack(key)
         except Exception:
             failures: list[Exception] = []
             if created:
@@ -90,11 +90,9 @@ class ObjectStorage:
             raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
         return data
 
-    def _ack(self, key: str, digest: str) -> str:
-        """Returns key if the published object hashes to digest; never deletes it on mismatch."""
-        stored = self.get(key)
-        if content_hash(stored) != digest:
-            raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
+    def _ack(self, key: str) -> str:
+        """Returns key once get() has read back and integrity-checked the object."""
+        self.get(key)
         return key
 
     def _remove(self, path: str) -> None:
