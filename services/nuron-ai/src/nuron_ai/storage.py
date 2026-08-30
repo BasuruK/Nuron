@@ -51,11 +51,11 @@ class ObjectStorage:
             if content_hash(staged) != digest:
                 raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
             try:
+                # Own dest cleanup unless exclusive-create lost the race.
+                created = True
                 self.fs.pipe_file(path, staged, mode="create")
             except FileExistsError:
-                pass
-            else:
-                created = True
+                created = False
             acked = self._ack(key, digest)
         except Exception as err:
             try:

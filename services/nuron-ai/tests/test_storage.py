@@ -221,6 +221,32 @@ def test_failed_ack_of_owned_create_removes_object_so_retry_recovers(
     assert memory_storage.get(key) == data
 
 
+def test_failed_publish_removes_partial_object_so_retry_recovers(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"partial publish"
+    digest = hashlib.sha256(data).hexdigest()
+    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    original_pipe = memory_storage.fs.pipe_file
+
+    def boom_after_partial(
+        path: str, value: bytes, mode: str = "overwrite", **kwargs: object
+    ) -> object:
+        if path == published and mode == "create":
+            original_pipe(path, b"partial garbage", mode="overwrite")
+            raise OSError("network blip")
+        return original_pipe(path, value, mode=mode, **kwargs)
+
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", boom_after_partial)
+    with pytest.raises(OSError, match="network blip"):
+        memory_storage.put(data)
+
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", original_pipe)
+    assert not memory_storage.fs.exists(published)
+    key = memory_storage.put(data)
+    assert memory_storage.get(key) == data
+
+
 def test_cleanup_retries_rm_then_propagates_write_error(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
