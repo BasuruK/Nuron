@@ -37,10 +37,20 @@ class ObjectStorage:
         key = object_key(digest)
         path = f"{self.root}/{key}"
         if self.fs.exists(path):
-            return self._ack(key)
+            try:
+                return self._ack(key)
+            except CorruptedWriteError as err:
+                try:
+                    self._remove(path)
+                except Exception as remove_err:
+                    raise CleanupError(
+                        f"failed to remove objects for key {key!r}: {remove_err}"
+                    ) from remove_err
+                # Poisoned key: fall through and republish.
 
         staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
         staging = f"{staging_root}/{key}"
+        publish_attempted = False
         try:
             with self.fs.open(staging, "wb") as handle:
                 handle.write(data)
@@ -48,23 +58,31 @@ class ObjectStorage:
                 staged = handle.read()
             if content_hash(staged) != digest:
                 raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
+            publish_attempted = True
             try:
-                # If-None-Match exclusive create. Do not delete on later ack failure:
-                # a concurrent putter may already have returned this key.
+                # If-None-Match exclusive create. Delete the published path only if
+                # ack hash-mismatches; a transient ack error must not yank a peer's key.
                 self.fs.pipe_file(path, staged, mode="create")
             except FileExistsError:
                 pass
             acked = self._ack(key)
-        except Exception:
+        except Exception as err:
+            failures: list[Exception] = []
+            if publish_attempted and isinstance(err, CorruptedWriteError):
+                try:
+                    self._remove(path)
+                except Exception as remove_err:
+                    failures.append(remove_err)
             try:
                 self._remove(staging_root)
             except Exception as remove_err:
-                cleanup_err = remove_err
-            else:
-                raise
-            raise CleanupError(
-                f"failed to remove objects for key {key!r}: {cleanup_err}"
-            ) from cleanup_err
+                failures.append(remove_err)
+            if failures:
+                details = "; ".join(str(e) for e in failures)
+                raise CleanupError(
+                    f"failed to remove objects for key {key!r}: {details}"
+                ) from failures[0]
+            raise
         try:
             self._remove(staging_root)
         except Exception as err:

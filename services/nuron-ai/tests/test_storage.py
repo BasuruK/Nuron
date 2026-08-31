@@ -59,15 +59,17 @@ def test_second_put_of_existing_key_does_not_rewrite(
     memory_storage.put(data)  # must not raise
 
 
-def test_put_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorage) -> None:
+def test_put_repairs_corrupted_object_on_retry(memory_storage: ObjectStorage) -> None:
     data = b"trustworthy bytes"
     key = memory_storage.put(data)
     # Simulate corruption at rest (bit rot, a bad prior write) by writing directly,
     # bypassing put().
     memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", b"corrupted garbage")
 
-    with pytest.raises(CorruptedWriteError):
-        memory_storage.put(data)
+    repaired = memory_storage.put(data)
+
+    assert repaired == key
+    assert memory_storage.get(key) == data
 
 
 def test_get_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorage) -> None:
@@ -198,7 +200,7 @@ def test_concurrent_puts_of_same_bytes_keep_published_object(
     assert _staging_files(memory_storage) == []
 
 
-def test_failed_ack_of_owned_create_leaves_object_so_retry_recovers(
+def test_failed_ack_of_owned_create_purges_poison_so_retry_recovers(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = b"owned create"
@@ -228,7 +230,7 @@ def test_failed_ack_of_owned_create_leaves_object_so_retry_recovers(
         memory_storage.put(data)
 
     monkeypatch.setattr(memory_storage.fs, "open", original_open)
-    assert memory_storage.fs.exists(published)
+    assert not memory_storage.fs.exists(published)
     assert _staging_files(memory_storage) == []
     key = memory_storage.put(data)
     assert memory_storage.get(key) == data
@@ -423,31 +425,19 @@ def test_failed_ack_does_not_delete_key_a_peer_already_read(
             published_create_done["value"] = True
         return result
 
-    def corrupt_ack_read(path: str, mode: str = "rb", **kwargs: object) -> object:
-        handle = original_open(path, mode, **kwargs)
+    def fail_ack_read(path: str, mode: str = "rb", **kwargs: object) -> object:
         if (
             published_create_done["value"]
             and path == published
             and "r" in mode
             and "w" not in mode
         ):
-
-            class Bad:
-                def read(self) -> bytes:
-                    return b"garbage"
-
-                def __enter__(self) -> object:
-                    return self
-
-                def __exit__(self, *_args: object) -> None:
-                    handle.close()
-
-            return Bad()
-        return handle
+            raise OSError("ack read blip")
+        return original_open(path, mode, **kwargs)
 
     monkeypatch.setattr(memory_storage.fs, "pipe_file", pipe_then_peer_ack)
-    monkeypatch.setattr(memory_storage.fs, "open", corrupt_ack_read)
-    with pytest.raises(CorruptedWriteError):
+    monkeypatch.setattr(memory_storage.fs, "open", fail_ack_read)
+    with pytest.raises(OSError, match="ack read blip"):
         memory_storage.put(data)
 
     monkeypatch.setattr(memory_storage.fs, "pipe_file", original_pipe)
@@ -492,12 +482,14 @@ def test_rustfs_round_trip_returns_identical_bytes_with_hash_matching_key(
     assert rustfs_storage.get(key) == data
 
 
-def test_rustfs_detects_corrupted_write_rather_than_acking(
+def test_rustfs_put_repairs_corrupted_object(
     rustfs_storage: ObjectStorage,
 ) -> None:
     data = os.urandom(256)
     key = rustfs_storage.put(data)
     rustfs_storage.fs.pipe_file(f"{rustfs_storage.root}/{key}", b"corrupted garbage")
 
-    with pytest.raises(CorruptedWriteError):
-        rustfs_storage.put(data)
+    repaired = rustfs_storage.put(data)
+
+    assert repaired == key
+    assert rustfs_storage.get(key) == data
