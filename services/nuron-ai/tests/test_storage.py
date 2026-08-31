@@ -198,7 +198,7 @@ def test_concurrent_puts_of_same_bytes_keep_published_object(
     assert _staging_files(memory_storage) == []
 
 
-def test_failed_ack_of_owned_create_removes_object_so_retry_recovers(
+def test_failed_ack_of_owned_create_leaves_object_so_retry_recovers(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = b"owned create"
@@ -228,7 +228,8 @@ def test_failed_ack_of_owned_create_removes_object_so_retry_recovers(
         memory_storage.put(data)
 
     monkeypatch.setattr(memory_storage.fs, "open", original_open)
-    assert not memory_storage.fs.exists(published)
+    assert memory_storage.fs.exists(published)
+    assert _staging_files(memory_storage) == []
     key = memory_storage.put(data)
     assert memory_storage.get(key) == data
 
@@ -402,18 +403,34 @@ def test_successful_publish_cleanup_failure_raises_cleanup_error(
     assert memory_storage.get(key) == data
 
 
-def test_published_cleanup_failure_still_removes_staging(
+def test_failed_ack_does_not_delete_key_a_peer_already_read(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data = b"published cleanup probe"
+    data = b"shared object"
     digest = hashlib.sha256(data).hexdigest()
-    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    key = f"{digest[:2]}/{digest}"
+    published = f"{memory_storage.root}/{key}"
     original_open = memory_storage.fs.open
-    original_rm = memory_storage.fs.rm
+    original_pipe = memory_storage.fs.pipe_file
+    published_create_done = {"value": False}
 
-    def corrupt_published_read(path: str, mode: str = "rb", **kwargs: object) -> object:
+    def pipe_then_peer_ack(
+        path: str, value: bytes, mode: str = "overwrite", **kwargs: object
+    ) -> object:
+        result = original_pipe(path, value, mode=mode, **kwargs)
+        if path == published and mode == "create":
+            assert memory_storage.get(key) == data
+            published_create_done["value"] = True
+        return result
+
+    def corrupt_ack_read(path: str, mode: str = "rb", **kwargs: object) -> object:
         handle = original_open(path, mode, **kwargs)
-        if path == published and "r" in mode and "w" not in mode:
+        if (
+            published_create_done["value"]
+            and path == published
+            and "r" in mode
+            and "w" not in mode
+        ):
 
             class Bad:
                 def read(self) -> bytes:
@@ -428,23 +445,16 @@ def test_published_cleanup_failure_still_removes_staging(
             return Bad()
         return handle
 
-    def fail_published_rm(path: str, *args: object, **kwargs: object) -> object:
-        if path == published:
-            raise OSError("published rm failed")
-        return original_rm(path, *args, **kwargs)
-
-    monkeypatch.setattr(memory_storage.fs, "open", corrupt_published_read)
-    monkeypatch.setattr(memory_storage.fs, "rm", fail_published_rm)
-    with pytest.raises(CleanupError) as caught:
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", pipe_then_peer_ack)
+    monkeypatch.setattr(memory_storage.fs, "open", corrupt_ack_read)
+    with pytest.raises(CorruptedWriteError):
         memory_storage.put(data)
 
-    assert "published rm failed" in str(caught.value)
-    assert isinstance(caught.value.__cause__, OSError)
-    assert "published rm failed" in str(caught.value.__cause__)
+    monkeypatch.setattr(memory_storage.fs, "pipe_file", original_pipe)
     monkeypatch.setattr(memory_storage.fs, "open", original_open)
-    monkeypatch.setattr(memory_storage.fs, "rm", original_rm)
+    assert memory_storage.get(key) == data
     assert _staging_files(memory_storage) == []
-    assert memory_storage.fs.exists(published)
+
 
 
 # -- round-trip test against the compose RustFS (issue #18 definition of done) ----

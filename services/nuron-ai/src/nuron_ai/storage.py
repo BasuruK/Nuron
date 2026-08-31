@@ -41,7 +41,6 @@ class ObjectStorage:
 
         staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
         staging = f"{staging_root}/{key}"
-        created = False
         try:
             with self.fs.open(staging, "wb") as handle:
                 handle.write(data)
@@ -50,29 +49,22 @@ class ObjectStorage:
             if content_hash(staged) != digest:
                 raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
             try:
-                # s3fs mode="create" is If-None-Match *; own dest cleanup only if we won.
+                # If-None-Match exclusive create. Do not delete on later ack failure:
+                # a concurrent putter may already have returned this key.
                 self.fs.pipe_file(path, staged, mode="create")
-                created = True
             except FileExistsError:
-                created = False
+                pass
             acked = self._ack(key)
         except Exception:
-            failures: list[Exception] = []
-            if created:
-                try:
-                    self._remove(path)
-                except Exception as remove_err:
-                    failures.append(remove_err)
             try:
                 self._remove(staging_root)
             except Exception as remove_err:
-                failures.append(remove_err)
-            if failures:
-                details = "; ".join(str(e) for e in failures)
-                raise CleanupError(
-                    f"failed to remove objects for key {key!r}: {details}"
-                ) from failures[0]
-            raise
+                cleanup_err = remove_err
+            else:
+                raise
+            raise CleanupError(
+                f"failed to remove objects for key {key!r}: {cleanup_err}"
+            ) from cleanup_err
         try:
             self._remove(staging_root)
         except Exception as err:
