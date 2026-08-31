@@ -41,32 +41,19 @@ class ObjectStorage:
             try:
                 return self._ack(key)
             except CorruptedWriteError:
-                try:
-                    self._remove(path)
-                except Exception as remove_err:
-                    raise CleanupError(
-                        f"failed to remove objects for key {key!r}: {remove_err}"
-                    ) from remove_err
-                # Poisoned key: fall through and republish.
+                # Overwrite in place. Deleting would race a peer's already-acked repair.
+                self.fs.pipe_file(path, data, mode="overwrite")
+                return self._ack(key)
 
         try:
-            try:
-                # If-None-Match exclusive create. Delete only on ack hash-mismatch;
-                # a transient ack error must not yank a peer's key.
-                self.fs.pipe_file(path, data, mode="create")
-            except FileExistsError:
-                pass
+            self.fs.pipe_file(path, data, mode="create")
+        except FileExistsError:
+            pass
+        try:
             return self._ack(key)
         except CorruptedWriteError:
-            try:
-                self._remove(path)
-            except Exception as remove_err:
-                cleanup_err = remove_err
-            else:
-                raise
-            raise CleanupError(
-                f"failed to remove objects for key {key!r}: {cleanup_err}"
-            ) from cleanup_err
+            self.fs.pipe_file(path, data, mode="overwrite")
+            return self._ack(key)
 
     def get(self, key: str) -> bytes:
         """Reads bytes at key; raises if they don't hash to the digest encoded in key."""

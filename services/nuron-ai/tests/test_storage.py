@@ -8,7 +8,7 @@ from typing import Any
 import fsspec
 import pytest
 
-from nuron_ai.storage import CleanupError, CorruptedWriteError, ObjectStorage, from_uri
+from nuron_ai.storage import CorruptedWriteError, ObjectStorage, from_uri
 
 # -- fast logic tests, against an in-memory filesystem -----------------------
 
@@ -83,6 +83,23 @@ def test_put_repairs_corrupted_object_on_retry(memory_storage: ObjectStorage) ->
     # bypassing put().
     memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", b"corrupted garbage")
 
+    repaired = memory_storage.put(data)
+
+    assert repaired == key
+    assert memory_storage.get(key) == data
+
+
+def test_repair_overwrites_poison_without_deleting(
+    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"trustworthy bytes"
+    key = memory_storage.put(data)
+    memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", b"corrupted garbage")
+
+    def fail_rm(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("repair must not delete")
+
+    monkeypatch.setattr(memory_storage.fs, "rm", fail_rm)
     repaired = memory_storage.put(data)
 
     assert repaired == key
@@ -171,12 +188,25 @@ def test_concurrent_puts_of_same_bytes_keep_published_object(
     assert memory_storage.get(expected_key) == data
 
 
-def test_failed_ack_of_owned_create_purges_poison_so_retry_recovers(
+def test_concurrent_repair_keeps_valid_object(memory_storage: ObjectStorage) -> None:
+    data = os.urandom(256)
+    key = memory_storage.put(data)
+    memory_storage.fs.pipe_file(f"{memory_storage.root}/{key}", b"corrupted garbage")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        keys = list(pool.map(lambda _: memory_storage.put(data), range(8)))
+
+    assert keys == [key] * 8
+    assert memory_storage.get(key) == data
+
+
+def test_failed_ack_of_owned_create_overwrites_so_retry_recovers(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = b"owned create"
     digest = hashlib.sha256(data).hexdigest()
-    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
+    key = f"{digest[:2]}/{digest}"
+    published = f"{memory_storage.root}/{key}"
     original_open = memory_storage.fs.open
 
     monkeypatch.setattr(
@@ -186,8 +216,6 @@ def test_failed_ack_of_owned_create_purges_poison_so_retry_recovers(
         memory_storage.put(data)
 
     monkeypatch.setattr(memory_storage.fs, "open", original_open)
-    assert not memory_storage.fs.exists(published)
-    key = memory_storage.put(data)
     assert memory_storage.get(key) == data
 
 
@@ -252,60 +280,40 @@ def test_failed_concurrent_publish_does_not_remove_winner(
     assert memory_storage.get(key) == data
 
 
-def test_cleanup_retries_rm_then_propagates_ack_error(
+def test_remove_retries_rm_then_succeeds(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data = b"retry cleanup"
-    digest = hashlib.sha256(data).hexdigest()
-    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
-    original_open = memory_storage.fs.open
+    path = f"{memory_storage.root}/to-remove"
+    memory_storage.fs.pipe_file(path, b"x")
     original_rm = memory_storage.fs.rm
     rm_calls = {"n": 0}
 
-    def flaky_rm(path: str, *args: object, **kwargs: object) -> object:
+    def flaky_rm(rm_path: str, *args: object, **kwargs: object) -> object:
         rm_calls["n"] += 1
         if rm_calls["n"] < 3:
             raise OSError("rm blip")
-        return original_rm(path, *args, **kwargs)
+        return original_rm(rm_path, *args, **kwargs)
 
     monkeypatch.setattr("nuron_ai.storage.time.sleep", lambda _s: None)
-    monkeypatch.setattr(
-        memory_storage.fs, "open", _corrupt_published_open(original_open, published)
-    )
     monkeypatch.setattr(memory_storage.fs, "rm", flaky_rm)
-    with pytest.raises(CorruptedWriteError):
-        memory_storage.put(data)
+    memory_storage._remove(path)
 
-    monkeypatch.setattr(memory_storage.fs, "open", original_open)
-    monkeypatch.setattr(memory_storage.fs, "rm", original_rm)
-    assert not memory_storage.fs.exists(published)
-    key = memory_storage.put(data)
-    assert memory_storage.get(key) == data
+    assert not memory_storage.fs.exists(path)
 
 
-def test_cleanup_exhausted_raises_cleanup_error_from_rm_failure(
+def test_remove_exhausted_raises_last_rm_error(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    data = b"cleanup exhausted"
-    digest = hashlib.sha256(data).hexdigest()
-    published = f"{memory_storage.root}/{digest[:2]}/{digest}"
-    original_open = memory_storage.fs.open
+    path = f"{memory_storage.root}/to-remove"
+    memory_storage.fs.pipe_file(path, b"x")
 
     def fail_rm(*_args: object, **_kwargs: object) -> None:
         raise OSError("rm failed")
 
     monkeypatch.setattr("nuron_ai.storage.time.sleep", lambda _s: None)
-    monkeypatch.setattr(
-        memory_storage.fs, "open", _corrupt_published_open(original_open, published)
-    )
     monkeypatch.setattr(memory_storage.fs, "rm", fail_rm)
-    with pytest.raises(CleanupError) as caught:
-        memory_storage.put(data)
-
-    assert isinstance(caught.value.__cause__, OSError)
-    assert "rm failed" in str(caught.value.__cause__)
-    assert "rm failed" in str(caught.value)
-    assert isinstance(caught.value.__context__, CorruptedWriteError)
+    with pytest.raises(OSError, match="rm failed"):
+        memory_storage._remove(path)
 
 
 def test_failed_ack_does_not_delete_key_a_peer_already_read(
