@@ -5,7 +5,7 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 """
 
 import os
-import uuid
+import time
 from dataclasses import dataclass
 
 import fsspec
@@ -14,6 +14,7 @@ from fsspec.spec import AbstractFileSystem
 from nuron_ai.core import content_hash, object_key
 
 _REMOVE_ATTEMPTS = 3
+_REMOVE_RETRY_DELAY_S = 0.05
 
 
 class CorruptedWriteError(RuntimeError):
@@ -32,14 +33,14 @@ class ObjectStorage:
     root: str
 
     def put(self, data: bytes) -> str:
-        """Stages bytes at a request-unique key, then publishes to the hash path if absent."""
+        """Publishes bytes at the content-hash key if absent; read-back hashes before ack."""
         digest = content_hash(data)
         key = object_key(digest)
         path = f"{self.root}/{key}"
         if self.fs.exists(path):
             try:
                 return self._ack(key)
-            except CorruptedWriteError as err:
+            except CorruptedWriteError:
                 try:
                     self._remove(path)
                 except Exception as remove_err:
@@ -48,48 +49,24 @@ class ObjectStorage:
                     ) from remove_err
                 # Poisoned key: fall through and republish.
 
-        staging_root = f"{self.root}/.staging/{uuid.uuid4().hex}"
-        staging = f"{staging_root}/{key}"
-        publish_attempted = False
         try:
-            with self.fs.open(staging, "wb") as handle:
-                handle.write(data)
-            with self.fs.open(staging, "rb") as handle:
-                staged = handle.read()
-            if content_hash(staged) != digest:
-                raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
-            publish_attempted = True
             try:
-                # If-None-Match exclusive create. Delete the published path only if
-                # ack hash-mismatches; a transient ack error must not yank a peer's key.
-                self.fs.pipe_file(path, staged, mode="create")
+                # If-None-Match exclusive create. Delete only on ack hash-mismatch;
+                # a transient ack error must not yank a peer's key.
+                self.fs.pipe_file(path, data, mode="create")
             except FileExistsError:
                 pass
-            acked = self._ack(key)
-        except Exception as err:
-            failures: list[Exception] = []
-            if publish_attempted and isinstance(err, CorruptedWriteError):
-                try:
-                    self._remove(path)
-                except Exception as remove_err:
-                    failures.append(remove_err)
+            return self._ack(key)
+        except CorruptedWriteError:
             try:
-                self._remove(staging_root)
+                self._remove(path)
             except Exception as remove_err:
-                failures.append(remove_err)
-            if failures:
-                details = "; ".join(str(e) for e in failures)
-                raise CleanupError(
-                    f"failed to remove objects for key {key!r}: {details}"
-                ) from failures[0]
-            raise
-        try:
-            self._remove(staging_root)
-        except Exception as err:
+                cleanup_err = remove_err
+            else:
+                raise
             raise CleanupError(
-                f"failed to remove objects for key {key!r}: {err}"
-            ) from err
-        return acked
+                f"failed to remove objects for key {key!r}: {cleanup_err}"
+            ) from cleanup_err
 
     def get(self, key: str) -> bytes:
         """Reads bytes at key; raises if they don't hash to the digest encoded in key."""
@@ -106,15 +83,17 @@ class ObjectStorage:
         return key
 
     def _remove(self, path: str) -> None:
-        """Deletes path if present; retries on failure, then raises the last error."""
+        """Deletes path if present; retries with a bounded delay, then raises the last error."""
         last: Exception | None = None
-        for _ in range(_REMOVE_ATTEMPTS):
+        for attempt in range(_REMOVE_ATTEMPTS):
             try:
                 if self.fs.exists(path):
                     self.fs.rm(path, recursive=True)
                 return
             except Exception as err:
                 last = err
+                if attempt + 1 < _REMOVE_ATTEMPTS:
+                    time.sleep(_REMOVE_RETRY_DELAY_S)
         assert last is not None
         raise last
 
