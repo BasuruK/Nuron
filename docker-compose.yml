@@ -105,6 +105,10 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
     volumes:
       - rustfs_data:/data/rustfs0
+    ports:
+      # ponytail: host-published S3 until nuron-ai joins the `nuron` network (NU-004).
+      - "127.0.0.1:9000:9000"
+    # Console UI -- uncomment only for local debugging with a GUI client.
     # ports:
     #   - "127.0.0.1:9001:9001"
     networks:
