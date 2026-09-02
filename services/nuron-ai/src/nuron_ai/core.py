@@ -14,11 +14,13 @@ from typing import Literal
 AuthorSource = Literal["extracted", "default", "unknown"]
 DeltaAction = Literal["add", "update", "unchanged", "drop_ref"]
 
+# YAML frontmatter at file start: --- ... ---. Group 1 = block body.
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?\n)---[ \t]*\n?", re.DOTALL)
-# Dash class covers hyphen/en-dash/em-dash: markdown conversion (LlamaParse, A11) doesn't
-# preserve which one the source used.
+# Closing line: "- Name, YYYY-MM-DD". Dash class = hyphen/en/em; LlamaParse/A11 don't preserve which the source used.
 _SIGNATURE_RE = re.compile(r"^[-–—][ \t]*([^,\n]+),[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$", re.MULTILINE)
+# ISO date anywhere in a filename. Group 1 = YYYY-MM-DD.
 _FILENAME_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+# Markdown H1. Group 1 = heading text after "# ".
 _H1_RE = re.compile(r"^#[ \t]+(.+)$", re.MULTILINE)
 
 
@@ -58,6 +60,7 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
     frontmatter_author = frontmatter.get("author")
     author: str | None
     author_source: AuthorSource
+    
     if isinstance(frontmatter_author, str) and frontmatter_author.strip():
         author, author_source = frontmatter_author.strip(), "extracted"
     elif signature is not None:
