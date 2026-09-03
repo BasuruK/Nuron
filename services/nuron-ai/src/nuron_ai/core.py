@@ -60,7 +60,7 @@ def parse_header(text: str, filename: str, source_owner: str | None) -> ContentH
     frontmatter_author = frontmatter.get("author")
     author: str | None
     author_source: AuthorSource
-    
+
     if isinstance(frontmatter_author, str) and frontmatter_author.strip():
         author, author_source = frontmatter_author.strip(), "extracted"
     elif signature is not None:
