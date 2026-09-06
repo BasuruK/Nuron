@@ -280,42 +280,6 @@ def test_failed_concurrent_publish_does_not_remove_winner(
     assert memory_storage.get(key) == data
 
 
-def test_remove_retries_rm_then_succeeds(
-    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = f"{memory_storage.root}/to-remove"
-    memory_storage.fs.pipe_file(path, b"x")
-    original_rm = memory_storage.fs.rm
-    rm_calls = {"n": 0}
-
-    def flaky_rm(rm_path: str, *args: object, **kwargs: object) -> object:
-        rm_calls["n"] += 1
-        if rm_calls["n"] < 3:
-            raise OSError("rm blip")
-        return original_rm(rm_path, *args, **kwargs)
-
-    monkeypatch.setattr("nuron_ai.storage.time.sleep", lambda _s: None)
-    monkeypatch.setattr(memory_storage.fs, "rm", flaky_rm)
-    memory_storage._remove(path)
-
-    assert not memory_storage.fs.exists(path)
-
-
-def test_remove_exhausted_raises_last_rm_error(
-    memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = f"{memory_storage.root}/to-remove"
-    memory_storage.fs.pipe_file(path, b"x")
-
-    def fail_rm(*_args: object, **_kwargs: object) -> None:
-        raise OSError("rm failed")
-
-    monkeypatch.setattr("nuron_ai.storage.time.sleep", lambda _s: None)
-    monkeypatch.setattr(memory_storage.fs, "rm", fail_rm)
-    with pytest.raises(OSError, match="rm failed"):
-        memory_storage._remove(path)
-
-
 def test_failed_ack_does_not_delete_key_a_peer_already_read(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

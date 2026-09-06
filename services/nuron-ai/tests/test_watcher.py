@@ -155,7 +155,7 @@ def test_scan_lands_new_file_as_landed_row(
     tmp_path: Path, memory_storage: ObjectStorage, db_conn: psycopg.Connection
 ) -> None:
     target = tmp_path / "decision.md"
-    data = b"# A decision\n\n- Basuru, 2026-05-14\n"
+    data = f"# A decision {uuid.uuid4().hex}\n".encode()
     target.write_bytes(data)
     _age_file(target, STABILITY_WINDOW + 1)
     digest = hashlib.sha256(data).hexdigest()
