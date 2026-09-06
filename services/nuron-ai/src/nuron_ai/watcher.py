@@ -53,6 +53,21 @@ def iter_landable(
             logger.warning("skipping unreadable file %s: %s", path, err)
             continue
 
+        try:
+            restat = path.stat()
+        except OSError as err:
+            logger.warning("skipping unreadable file %s: %s", path, err)
+            continue
+
+        # Skip if the file was replaced or rewritten between the first stat and this one.
+        identity_changed = restat.st_dev != stat.st_dev or restat.st_ino != stat.st_ino
+        size_changed = restat.st_size != stat.st_size
+        mtime_changed = restat.st_mtime_ns != stat.st_mtime_ns
+        if identity_changed or size_changed or mtime_changed:
+            continue
+        if now - restat.st_mtime < stability_window_seconds:
+            continue
+
         if len(data) == 0:
             logger.warning("skipping zero-byte file %s", path)
             continue

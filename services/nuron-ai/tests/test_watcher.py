@@ -105,6 +105,85 @@ def test_iter_landable_does_not_let_one_bad_file_block_the_rest(tmp_path: Path) 
     ]
 
 
+def test_iter_landable_skips_file_mutated_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "mutating.md"
+    target.write_text("original")
+    _age_file(target, STABILITY_WINDOW + 1)
+    original_read = Path.read_bytes
+
+    def read_then_mutate(self: Path) -> bytes:
+        data = original_read(self)
+        if self == target:
+            self.write_text("torn write")
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_mutate)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+
+
+def test_iter_landable_skips_replaced_file_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "replaced.md"
+    target.write_text("original")
+    _age_file(target, STABILITY_WINDOW + 1)
+    original_read = Path.read_bytes
+
+    def read_then_replace(self: Path) -> bytes:
+        data = original_read(self)
+        if self == target:
+            self.unlink()
+            self.write_text("original")
+            _age_file(self, STABILITY_WINDOW + 1)
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_replace)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+
+
+def test_iter_landable_skips_when_restat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "vanished.md"
+    target.write_text("original")
+    _age_file(target, STABILITY_WINDOW + 1)
+    original_read = Path.read_bytes
+
+    def read_then_delete(self: Path) -> bytes:
+        data = original_read(self)
+        if self == target:
+            self.unlink()
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_delete)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+
+
+def test_iter_landable_skips_when_mtime_changes_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "rewritten.md"
+    target.write_text("original")
+    _age_file(target, STABILITY_WINDOW + 1)
+    original_read = Path.read_bytes
+
+    def read_then_touch(self: Path) -> bytes:
+        data = original_read(self)
+        if self == target:
+            now = time.time()
+            os.utime(self, (now, now))
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_touch)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+
+
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="permission bits unenforced")
 def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
     target = tmp_path / "locked.md"
