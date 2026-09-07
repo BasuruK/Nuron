@@ -7,6 +7,7 @@ as a bare row at state 'landed' -- format extraction and header parsing are NU-0
 
 import logging
 import os
+import stat
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -33,44 +34,74 @@ def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple
     now = time.time()
 
     for path in sorted(root.rglob("*")):
+        if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+            continue
+
         try:
-            is_file = path.is_file()
+            path_stat = path.lstat()
         except OSError as err:
             logger.warning("skipping unreadable file %s: %s", path, err)
             continue
 
-        if not is_file or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+        if not stat.S_ISREG(path_stat.st_mode):
             continue
 
+        # lstat/fstat identity checks fail closed where O_NOFOLLOW is unavailable (Windows).
+        open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
-            stat = path.stat()
-        except OSError as err:
-            logger.warning("skipping unreadable file %s: %s", path, err)
-            continue
-
-        if stat.st_size > _MAX_FILE_SIZE_BYTES:
-            logger.warning("skipping oversized file %s: %d bytes", path, stat.st_size)
-            continue
-
-        if now - stat.st_mtime < stability_window_seconds:
-            continue  # not yet stable; a candidate for a later scan
-
-        try:
-            data = path.read_bytes()
+            file_descriptor = os.open(path, open_flags)
         except OSError as err:
             logger.warning("skipping unreadable file %s: %s", path, err)
             continue
 
         try:
-            restat = path.stat()
+            opened_stat = os.fstat(file_descriptor)
+            if not stat.S_ISREG(opened_stat.st_mode):
+                continue
+
+            identity_changed = (
+                opened_stat.st_dev != path_stat.st_dev or opened_stat.st_ino != path_stat.st_ino
+            )
+            if identity_changed:
+                continue
+
+            if opened_stat.st_size > _MAX_FILE_SIZE_BYTES:
+                logger.warning("skipping oversized file %s: %d bytes", path, opened_stat.st_size)
+                continue
+
+            if now - opened_stat.st_mtime < stability_window_seconds:
+                continue  # not yet stable; a candidate for a later scan
+
+            chunks: list[bytes] = []
+            remaining = _MAX_FILE_SIZE_BYTES
+            while remaining > 0:
+                chunk = os.read(file_descriptor, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            final_stat = os.fstat(file_descriptor)
+        except OSError as err:
+            logger.warning("skipping unreadable file %s: %s", path, err)
+            continue
+        finally:
+            os.close(file_descriptor)
+
+        try:
+            restat = path.lstat()
         except OSError as err:
             logger.warning("skipping unreadable file %s: %s", path, err)
             continue
 
-        # Skip if the file was replaced or rewritten between the first stat and this one.
-        identity_changed = restat.st_dev != stat.st_dev or restat.st_ino != stat.st_ino
-        size_changed = restat.st_size != stat.st_size
-        mtime_changed = restat.st_mtime_ns != stat.st_mtime_ns
+        # Skip if the file was replaced or rewritten while its descriptor was open.
+        identity_changed = restat.st_dev != final_stat.st_dev or restat.st_ino != final_stat.st_ino
+        size_changed = (
+            final_stat.st_size != opened_stat.st_size or restat.st_size != final_stat.st_size
+        )
+        mtime_changed = (
+            final_stat.st_mtime_ns != opened_stat.st_mtime_ns or restat.st_mtime_ns != final_stat.st_mtime_ns
+        )
         if identity_changed or size_changed or mtime_changed:
             continue
 
@@ -119,10 +150,12 @@ def main() -> None:
     root = Path(os.environ["WATCHED_DIRECTORY"])
     interval_seconds = float(os.environ["SCAN_INTERVAL_HOURS"]) * 3600
     stability_window_seconds = float(os.environ["MTIME_STABILITY_WINDOW_SECONDS"])
-    storage = storage_from_env()
+    storage: ObjectStorage | None = None
 
     while True:
         try:
+            if storage is None:
+                storage = storage_from_env()
             with db.from_env() as conn:
                 scan(root, storage, conn, stability_window_seconds)
         except Exception:

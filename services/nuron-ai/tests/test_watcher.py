@@ -16,6 +16,7 @@ from nuron_ai.watcher import iter_landable, scan
 
 STABILITY_WINDOW = 30.0
 MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+RUNNING_AS_ROOT = getattr(os, "geteuid", lambda: -1)() == 0
 
 # -- iter_landable: pure filesystem decisions, no Postgres/RustFS needed -----
 
@@ -28,7 +29,7 @@ def _age_file(path: Path, seconds_old: float) -> None:
 
 def test_iter_landable_yields_stable_supported_file(tmp_path: Path) -> None:
     target = tmp_path / "decision.md"
-    target.write_text("# Subject\n")
+    target.write_bytes(b"# Subject\n")
     _age_file(target, STABILITY_WINDOW + 1)
 
     results = list(iter_landable(tmp_path, STABILITY_WINDOW))
@@ -56,12 +57,27 @@ def test_iter_landable_recurses_into_nested_directories(tmp_path: Path) -> None:
     nested = tmp_path / "nested" / "dir"
     nested.mkdir(parents=True)
     target = nested / "file.md"
-    target.write_text("# Nested\n")
+    target.write_bytes(b"# Nested\n")
     _age_file(target, STABILITY_WINDOW + 1)
 
     results = list(iter_landable(tmp_path, STABILITY_WINDOW))
 
     assert results == [(target, b"# Nested\n")]
+
+
+def test_iter_landable_skips_symlink_to_file_outside_root(tmp_path: Path) -> None:
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Outside\n")
+    _age_file(outside, STABILITY_WINDOW + 1)
+    link = watched / "linked.md"
+    try:
+        link.symlink_to(outside)
+    except OSError as err:
+        pytest.skip(f"symlinks unavailable: {err}")
+
+    assert list(iter_landable(watched, STABILITY_WINDOW)) == []
 
 
 def test_iter_landable_skips_zero_byte_file(tmp_path: Path) -> None:
@@ -88,6 +104,33 @@ def test_iter_landable_skips_oversized_file(
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
 
+def test_iter_landable_bounds_read_when_file_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "growing.pdf"
+    target.write_bytes(b"small")
+    _age_file(target, STABILITY_WINDOW + 1)
+    monkeypatch.setattr(watcher, "_MAX_FILE_SIZE_BYTES", 16)
+    original_read = os.read
+    read_sizes: list[int] = []
+    grew = False
+
+    def grow_then_read(file_descriptor: int, count: int) -> bytes:
+        nonlocal grew
+        read_sizes.append(count)
+        if not grew:
+            grew = True
+            with target.open("ab") as handle:
+                handle.write(b"x" * 20)
+        return original_read(file_descriptor, count)
+
+    monkeypatch.setattr(Path, "read_bytes", lambda _self: pytest.fail("unbounded read"))
+    monkeypatch.setattr(watcher.os, "read", grow_then_read)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+    assert max(read_sizes) <= 16
+
+
 def test_iter_landable_does_not_utf8_check_pdf(tmp_path: Path) -> None:
     target = tmp_path / "scan.pdf"
     data = b"%PDF-1.4\xff\xfebinary"
@@ -101,9 +144,9 @@ def test_iter_landable_does_not_let_one_bad_file_block_the_rest(tmp_path: Path) 
     good_before = tmp_path / "a-good.md"
     bad = tmp_path / "b-bad.md"
     good_after = tmp_path / "c-good.md"
-    good_before.write_text("# Good before\n")
+    good_before.write_bytes(b"# Good before\n")
     bad.write_bytes(b"\xff\xfe not utf-8")
-    good_after.write_text("# Good after\n")
+    good_after.write_bytes(b"# Good after\n")
     for path in (good_before, bad, good_after):
         _age_file(path, STABILITY_WINDOW + 1)
 
@@ -115,7 +158,7 @@ def test_iter_landable_does_not_let_one_bad_file_block_the_rest(tmp_path: Path) 
     ]
 
 
-def test_iter_landable_skips_file_when_is_file_fails(
+def test_iter_landable_skips_file_when_lstat_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     unreadable = tmp_path / "a-unreadable.md"
@@ -123,14 +166,14 @@ def test_iter_landable_skips_file_when_is_file_fails(
     unreadable.write_bytes(b"# Unreadable\n")
     good.write_bytes(b"# Good\n")
     _age_file(good, STABILITY_WINDOW + 1)
-    original_is_file = Path.is_file
+    original_lstat = Path.lstat
 
-    def is_file(self: Path) -> bool:
+    def lstat(self: Path) -> os.stat_result:
         if self == unreadable:
             raise PermissionError("permission denied")
-        return original_is_file(self)
+        return original_lstat(self)
 
-    monkeypatch.setattr(Path, "is_file", is_file)
+    monkeypatch.setattr(Path, "lstat", lstat)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == [(good, b"# Good\n")]
 
@@ -141,15 +184,18 @@ def test_iter_landable_skips_file_mutated_during_read(
     target = tmp_path / "mutating.md"
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
-    original_read = Path.read_bytes
+    original_read = os.read
+    mutated = False
 
-    def read_then_mutate(self: Path) -> bytes:
-        data = original_read(self)
-        if self == target:
-            self.write_text("torn write")
+    def read_then_mutate(file_descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        data = original_read(file_descriptor, count)
+        if not mutated:
+            mutated = True
+            target.write_text("torn write")
         return data
 
-    monkeypatch.setattr(Path, "read_bytes", read_then_mutate)
+    monkeypatch.setattr(watcher.os, "read", read_then_mutate)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
@@ -160,17 +206,20 @@ def test_iter_landable_skips_replaced_file_during_read(
     target = tmp_path / "replaced.md"
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
-    original_read = Path.read_bytes
+    original_read = os.read
+    replaced = False
 
-    def read_then_replace(self: Path) -> bytes:
-        data = original_read(self)
-        if self == target:
-            self.unlink()
-            self.write_text("original")
-            _age_file(self, STABILITY_WINDOW + 1)
+    def read_then_replace(file_descriptor: int, count: int) -> bytes:
+        nonlocal replaced
+        data = original_read(file_descriptor, count)
+        if not replaced:
+            replaced = True
+            target.unlink()
+            target.write_text("original")
+            _age_file(target, STABILITY_WINDOW + 1)
         return data
 
-    monkeypatch.setattr(Path, "read_bytes", read_then_replace)
+    monkeypatch.setattr(watcher.os, "read", read_then_replace)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
@@ -181,15 +230,18 @@ def test_iter_landable_skips_when_restat_fails(
     target = tmp_path / "vanished.md"
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
-    original_read = Path.read_bytes
+    original_read = os.read
+    deleted = False
 
-    def read_then_delete(self: Path) -> bytes:
-        data = original_read(self)
-        if self == target:
-            self.unlink()
+    def read_then_delete(file_descriptor: int, count: int) -> bytes:
+        nonlocal deleted
+        data = original_read(file_descriptor, count)
+        if not deleted:
+            deleted = True
+            target.unlink()
         return data
 
-    monkeypatch.setattr(Path, "read_bytes", read_then_delete)
+    monkeypatch.setattr(watcher.os, "read", read_then_delete)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
@@ -200,21 +252,24 @@ def test_iter_landable_skips_when_mtime_changes_during_read(
     target = tmp_path / "rewritten.md"
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
-    original_read = Path.read_bytes
+    original_read = os.read
+    touched = False
 
-    def read_then_touch(self: Path) -> bytes:
-        data = original_read(self)
-        if self == target:
+    def read_then_touch(file_descriptor: int, count: int) -> bytes:
+        nonlocal touched
+        data = original_read(file_descriptor, count)
+        if not touched:
+            touched = True
             now = time.time()
-            os.utime(self, (now, now))
+            os.utime(target, (now, now))
         return data
 
-    monkeypatch.setattr(Path, "read_bytes", read_then_touch)
+    monkeypatch.setattr(watcher.os, "read", read_then_touch)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
 
-@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="permission bits unenforced")
+@pytest.mark.skipif(os.name == "nt" or RUNNING_AS_ROOT, reason="permission bits unenforced")
 def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
     target = tmp_path / "locked.md"
     target.write_text("# Secret\n")
@@ -230,6 +285,7 @@ def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("failure_site", "failure"),
     [
+        ("storage", OSError("RustFS unavailable")),
         ("connect", psycopg.OperationalError("PostgreSQL unavailable")),
         ("scan", psycopg.OperationalError("PostgreSQL unavailable")),
         ("scan", OSError("RustFS unavailable")),
@@ -241,11 +297,18 @@ def test_main_retries_after_transient_backend_failure(
     monkeypatch.setenv("WATCHED_DIRECTORY", ".")
     monkeypatch.setenv("SCAN_INTERVAL_HOURS", "1")
     monkeypatch.setenv("MTIME_STABILITY_WINDOW_SECONDS", "30")
-    monkeypatch.setattr(watcher, "storage_from_env", lambda: object())
+    storage_attempts = 0
     connection = object()
     connection_attempts = 0
     scan_attempts = 0
     sleep_delays: list[float] = []
+
+    def create_storage() -> object:
+        nonlocal storage_attempts
+        storage_attempts += 1
+        if failure_site == "storage" and storage_attempts == 1:
+            raise failure
+        return object()
 
     def connect() -> nullcontext[object]:
         nonlocal connection_attempts
@@ -265,6 +328,7 @@ def test_main_retries_after_transient_backend_failure(
         if len(sleep_delays) == 2:
             raise KeyboardInterrupt
 
+    monkeypatch.setattr(watcher, "storage_from_env", create_storage)
     monkeypatch.setattr(db, "from_env", connect)
     monkeypatch.setattr(watcher, "scan", run_scan)
     monkeypatch.setattr(watcher.time, "sleep", sleep)
@@ -272,8 +336,12 @@ def test_main_retries_after_transient_backend_failure(
     with pytest.raises(KeyboardInterrupt):
         watcher.main()
 
-    assert connection_attempts == 2
-    assert scan_attempts == (1 if failure_site == "connect" else 2)
+    assert storage_attempts == (2 if failure_site == "storage" else 1)
+    assert connection_attempts == (1 if failure_site == "storage" else 2)
+    if failure_site in {"storage", "connect"}:
+        assert scan_attempts == 1
+    else:
+        assert scan_attempts == 2
     assert sleep_delays == [60.0, 3600.0]
 
 
