@@ -428,6 +428,47 @@ def test_scan_continues_after_file_failure_then_raises(
     assert caplog.records == []
 
 
+def test_scan_lands_reachable_file_then_raises_traversal_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed_subtree = tmp_path / "a-failed"
+    failed_subtree.mkdir()
+    valid = tmp_path / "b-valid.md"
+    data = b"# Valid\n"
+    valid.write_bytes(data)
+    _age_file(valid, STABILITY_WINDOW + 1)
+    original_scandir = os.scandir
+    original_path_scandir = getattr(Path, "_scandir")
+
+    def scandir(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+        if Path(path) == failed_subtree:
+            raise PermissionError(f"cannot enumerate {failed_subtree}")
+        return original_scandir(path)
+
+    def path_scandir(path: Path) -> Iterator[os.DirEntry[str]]:
+        if path == failed_subtree:
+            failed_scandir = MagicMock()
+            failed_scandir.__enter__.return_value = failed_scandir
+            failed_scandir.__iter__.side_effect = PermissionError(
+                f"cannot enumerate {failed_subtree}"
+            )
+            return failed_scandir
+        return original_path_scandir(path)
+
+    monkeypatch.setattr(watcher.os, "scandir", scandir)
+    monkeypatch.setattr(Path, "_scandir", path_scandir)
+    storage = MagicMock(spec=ObjectStorage)
+    conn = MagicMock(spec=psycopg.Connection)
+
+    with pytest.raises(PermissionError) as raised:
+        scan(tmp_path, storage, conn, STABILITY_WINDOW)
+
+    assert str(failed_subtree) in str(raised.value)
+    storage.put.assert_called_once_with(data)
+    assert conn.execute.call_args.args[1][1] == valid.name
+    conn.commit.assert_called_once_with()
+
+
 # -- scan: lands rows in Postgres, gated behind real infra -------------------
 
 

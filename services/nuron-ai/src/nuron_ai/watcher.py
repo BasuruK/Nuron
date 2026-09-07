@@ -32,8 +32,20 @@ def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple
     Unreadable, oversized, zero-byte, and non-UTF-8 text files are logged and skipped.
     """
     now = time.time()
+    paths: list[Path] = []
+    traversal_errors: list[OSError] = []
 
-    for path in sorted(root.rglob("*")):
+    def record_traversal_error(error: OSError) -> None:
+        """Records an enumeration failure for propagation after reachable files."""
+        traversal_errors.append(error)
+
+    for directory, directory_names, file_names in os.walk(
+        root, onerror=record_traversal_error, followlinks=False
+    ):
+        directory_names.sort()
+        paths.extend(Path(directory) / file_name for file_name in file_names)
+
+    for path in sorted(paths):
         if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             continue
 
@@ -122,6 +134,9 @@ def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple
                 continue
 
         yield path, data
+
+    if traversal_errors:
+        raise traversal_errors[0]
 
 
 def scan(
