@@ -23,13 +23,10 @@ _SUPPORTED_EXTENSIONS = {".md", ".txt", ".docx", ".pdf"}
 _TEXT_EXTENSIONS = {".md", ".txt"}
 
 
-def iter_landable(
-    root: Path, stability_window_seconds: float, now: float | None = None
-) -> Iterator[tuple[Path, bytes]]:
+def iter_landable(root: Path, stability_window_seconds: float, now: float | None = None) -> Iterator[tuple[Path, bytes]]:
     """Yields (path, bytes) for each stable, readable, supported file under root.
 
-    Unreadable, zero-byte, and (for .md/.txt) non-UTF-8 files are logged and skipped -- one
-    bad file must never block the rest of the scan.
+    Unreadable, zero-byte, and (for .md/.txt) non-UTF-8 files are logged and skipped -- one bad file must never block the rest of the scan.
     """
     if now is None:
         now = time.time()
@@ -121,8 +118,11 @@ def main() -> None:
     storage = storage_from_env()
 
     while True:
-        with db.from_env() as conn:
-            scan(root, storage, conn, stability_window_seconds)
+        try:
+            with db.from_env() as conn:
+                scan(root, storage, conn, stability_window_seconds)
+        except Exception:
+            logger.exception("watcher scan failed; retrying after %.0f seconds", interval_seconds)
         time.sleep(interval_seconds)
 
 

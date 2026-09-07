@@ -3,13 +3,14 @@ import os
 import time
 import uuid
 from collections.abc import Iterator
+from contextlib import nullcontext
 from pathlib import Path
 
 import fsspec
 import psycopg
 import pytest
 
-from nuron_ai import db
+from nuron_ai import db, watcher
 from nuron_ai.storage import ObjectStorage
 from nuron_ai.watcher import iter_landable, scan
 
@@ -195,6 +196,49 @@ def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
         assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
     finally:
         target.chmod(0o644)
+
+
+@pytest.mark.parametrize("failure_site", ["connect", "scan"])
+def test_main_retries_after_transient_backend_failure(
+    monkeypatch: pytest.MonkeyPatch, failure_site: str
+) -> None:
+    monkeypatch.setenv("WATCHED_DIRECTORY", ".")
+    monkeypatch.setenv("SCAN_INTERVAL_HOURS", "1")
+    monkeypatch.setenv("MTIME_STABILITY_WINDOW_SECONDS", "30")
+    monkeypatch.setattr(watcher, "storage_from_env", lambda: object())
+    connection = object()
+    connection_attempts = 0
+    scan_attempts = 0
+    sleep_attempts = 0
+
+    def connect() -> nullcontext[object]:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if failure_site == "connect" and connection_attempts == 1:
+            raise psycopg.OperationalError("PostgreSQL unavailable")
+        return nullcontext(connection)
+
+    def run_scan(*args: object) -> None:
+        nonlocal scan_attempts
+        scan_attempts += 1
+        if failure_site == "scan" and scan_attempts == 1:
+            raise OSError("RustFS unavailable")
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleep_attempts
+        sleep_attempts += 1
+        if sleep_attempts == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(db, "from_env", connect)
+    monkeypatch.setattr(watcher, "scan", run_scan)
+    monkeypatch.setattr(watcher.time, "sleep", sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher.main()
+
+    assert connection_attempts == 2
+    assert scan_attempts == (1 if failure_site == "connect" else 2)
 
 
 # -- scan: lands rows in Postgres, gated behind real infra -------------------
