@@ -15,6 +15,7 @@ from nuron_ai.storage import ObjectStorage
 from nuron_ai.watcher import iter_landable, scan
 
 STABILITY_WINDOW = 30.0
+MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 
 # -- iter_landable: pure filesystem decisions, no Postgres/RustFS needed -----
 
@@ -71,6 +72,22 @@ def test_iter_landable_skips_zero_byte_file(tmp_path: Path) -> None:
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
 
+def test_iter_landable_skips_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "oversized.pdf"
+    with target.open("wb") as handle:
+        handle.truncate(MAX_FILE_SIZE_BYTES + 1)
+    _age_file(target, STABILITY_WINDOW + 1)
+
+    def fail_read(_self: Path) -> bytes:
+        raise AssertionError("oversized file must not be read")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+
+
 def test_iter_landable_skips_non_utf8_text_file(tmp_path: Path) -> None:
     target = tmp_path / "garbled.md"
     target.write_bytes(b"\xff\xfe not utf-8")
@@ -104,6 +121,26 @@ def test_iter_landable_does_not_let_one_bad_file_block_the_rest(tmp_path: Path) 
         (good_before, b"# Good before\n"),
         (good_after, b"# Good after\n"),
     ]
+
+
+def test_iter_landable_skips_file_when_is_file_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unreadable = tmp_path / "a-unreadable.md"
+    good = tmp_path / "b-good.md"
+    unreadable.write_bytes(b"# Unreadable\n")
+    good.write_bytes(b"# Good\n")
+    _age_file(good, STABILITY_WINDOW + 1)
+    original_is_file = Path.is_file
+
+    def is_file(self: Path) -> bool:
+        if self == unreadable:
+            raise PermissionError("permission denied")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+
+    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == [(good, b"# Good\n")]
 
 
 def test_iter_landable_skips_file_mutated_during_read(
@@ -198,9 +235,16 @@ def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
         target.chmod(0o644)
 
 
-@pytest.mark.parametrize("failure_site", ["connect", "scan"])
-def test_main_retries_after_transient_postgresql_failure(
-    monkeypatch: pytest.MonkeyPatch, failure_site: str
+@pytest.mark.parametrize(
+    ("failure_site", "failure"),
+    [
+        ("connect", psycopg.OperationalError("PostgreSQL unavailable")),
+        ("scan", psycopg.OperationalError("PostgreSQL unavailable")),
+        ("scan", OSError("RustFS unavailable")),
+    ],
+)
+def test_main_retries_after_transient_backend_failure(
+    monkeypatch: pytest.MonkeyPatch, failure_site: str, failure: Exception
 ) -> None:
     monkeypatch.setenv("WATCHED_DIRECTORY", ".")
     monkeypatch.setenv("SCAN_INTERVAL_HOURS", "1")
@@ -215,14 +259,14 @@ def test_main_retries_after_transient_postgresql_failure(
         nonlocal connection_attempts
         connection_attempts += 1
         if failure_site == "connect" and connection_attempts == 1:
-            raise psycopg.OperationalError("PostgreSQL unavailable")
+            raise failure
         return nullcontext(connection)
 
     def run_scan(*args: object) -> None:
         nonlocal scan_attempts
         scan_attempts += 1
         if failure_site == "scan" and scan_attempts == 1:
-            raise psycopg.OperationalError("PostgreSQL unavailable")
+            raise failure
 
     def sleep(seconds: float) -> None:
         sleep_delays.append(seconds)

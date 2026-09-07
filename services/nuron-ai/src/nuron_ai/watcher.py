@@ -21,25 +21,36 @@ logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS = {".md", ".txt", ".docx", ".pdf"}
 _TEXT_EXTENSIONS = {".md", ".txt"}
+_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 _RETRY_DELAY_SECONDS = 60.0
 
 
 def iter_landable(root: Path, stability_window_seconds: float, now: float | None = None) -> Iterator[tuple[Path, bytes]]:
     """Yields (path, bytes) for each stable, readable, supported file under root.
 
-    Unreadable, zero-byte, and (for .md/.txt) non-UTF-8 files are logged and skipped -- one bad file must never block the rest of the scan.
+    Unreadable, oversized, zero-byte, and non-UTF-8 text files are logged and skipped.
     """
     if now is None:
         now = time.time()
 
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+        try:
+            is_file = path.is_file()
+        except OSError as err:
+            logger.warning("skipping unreadable file %s: %s", path, err)
+            continue
+
+        if not is_file or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             continue
 
         try:
             stat = path.stat()
         except OSError as err:
             logger.warning("skipping unreadable file %s: %s", path, err)
+            continue
+
+        if stat.st_size > _MAX_FILE_SIZE_BYTES:
+            logger.warning("skipping oversized file %s: %d bytes", path, stat.st_size)
             continue
 
         if now - stat.st_mtime < stability_window_seconds:
@@ -111,7 +122,7 @@ def _land(conn: psycopg.Connection, digest: str, original_filename: str) -> None
 
 
 def main() -> None:
-    """Runs scheduled scans forever, retrying PostgreSQL failures after a bounded delay."""
+    """Runs scheduled scans forever, retrying scan failures after a bounded delay."""
     logging.basicConfig(level=logging.INFO)
     root = Path(os.environ["WATCHED_DIRECTORY"])
     interval_seconds = float(os.environ["SCAN_INTERVAL_HOURS"]) * 3600
@@ -122,7 +133,7 @@ def main() -> None:
         try:
             with db.from_env() as conn:
                 scan(root, storage, conn, stability_window_seconds)
-        except psycopg.Error:
+        except Exception:
             logger.exception("watcher scan failed; retrying after %.0f seconds", _RETRY_DELAY_SECONDS)
             time.sleep(_RETRY_DELAY_SECONDS)
             continue
