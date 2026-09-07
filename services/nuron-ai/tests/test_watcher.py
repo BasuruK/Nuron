@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import Iterator
 from contextlib import nullcontext
@@ -403,7 +404,9 @@ def test_main_retries_after_transient_backend_failure(
     assert sleep_delays == [60.0, 3600.0]
 
 
-def test_scan_continues_after_file_failure_then_raises(tmp_path: Path) -> None:
+def test_scan_continues_after_file_failure_then_raises(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     failing = tmp_path / "a-failing.md"
     valid = tmp_path / "b-valid.md"
     failing.write_bytes(b"# Failing\n")
@@ -414,13 +417,15 @@ def test_scan_continues_after_file_failure_then_raises(tmp_path: Path) -> None:
     storage.put.side_effect = [OSError("RustFS rejected first file"), "stored"]
     conn = MagicMock(spec=psycopg.Connection)
 
-    with pytest.raises(OSError, match="RustFS rejected first file"):
+    with pytest.raises(OSError, match="RustFS rejected first file") as raised:
         scan(tmp_path, storage, conn, STABILITY_WINDOW)
 
     assert storage.put.call_args_list == [call(b"# Failing\n"), call(b"# Valid\n")]
     assert conn.execute.call_args.args[1][1] == "b-valid.md"
     conn.commit.assert_called_once_with()
     conn.rollback.assert_called_once_with()
+    assert failing.name in "".join(traceback.format_exception(raised.value))
+    assert caplog.records == []
 
 
 # -- scan: lands rows in Postgres, gated behind real infra -------------------

@@ -150,9 +150,9 @@ def scan(
             )
             conn.commit()
         except Exception as err:
-            logger.exception("failed to land watched file %s", path)
             if first_error is None:
                 first_error = err
+                first_error.add_note(f"failed to land watched file {path}")
             conn.rollback()
 
     if first_error is not None:
