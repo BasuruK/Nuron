@@ -199,7 +199,7 @@ def test_iter_landable_skips_unreadable_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("failure_site", ["connect", "scan"])
-def test_main_retries_after_transient_backend_failure(
+def test_main_retries_after_transient_postgresql_failure(
     monkeypatch: pytest.MonkeyPatch, failure_site: str
 ) -> None:
     monkeypatch.setenv("WATCHED_DIRECTORY", ".")
@@ -209,7 +209,7 @@ def test_main_retries_after_transient_backend_failure(
     connection = object()
     connection_attempts = 0
     scan_attempts = 0
-    sleep_attempts = 0
+    sleep_delays: list[float] = []
 
     def connect() -> nullcontext[object]:
         nonlocal connection_attempts
@@ -222,12 +222,11 @@ def test_main_retries_after_transient_backend_failure(
         nonlocal scan_attempts
         scan_attempts += 1
         if failure_site == "scan" and scan_attempts == 1:
-            raise OSError("RustFS unavailable")
+            raise psycopg.OperationalError("PostgreSQL unavailable")
 
-    def sleep(_seconds: float) -> None:
-        nonlocal sleep_attempts
-        sleep_attempts += 1
-        if sleep_attempts == 2:
+    def sleep(seconds: float) -> None:
+        sleep_delays.append(seconds)
+        if len(sleep_delays) == 2:
             raise KeyboardInterrupt
 
     monkeypatch.setattr(db, "from_env", connect)
@@ -239,6 +238,7 @@ def test_main_retries_after_transient_backend_failure(
 
     assert connection_attempts == 2
     assert scan_attempts == (1 if failure_site == "connect" else 2)
+    assert sleep_delays == [60.0, 3600.0]
 
 
 # -- scan: lands rows in Postgres, gated behind real infra -------------------

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _SUPPORTED_EXTENSIONS = {".md", ".txt", ".docx", ".pdf"}
 _TEXT_EXTENSIONS = {".md", ".txt"}
+_RETRY_DELAY_SECONDS = 60.0
 
 
 def iter_landable(root: Path, stability_window_seconds: float, now: float | None = None) -> Iterator[tuple[Path, bytes]]:
@@ -110,7 +111,7 @@ def _land(conn: psycopg.Connection, digest: str, original_filename: str) -> None
 
 
 def main() -> None:
-    """Runs the watcher forever: scan, sleep SCAN_INTERVAL_HOURS, repeat."""
+    """Runs scheduled scans forever, retrying PostgreSQL failures after a bounded delay."""
     logging.basicConfig(level=logging.INFO)
     root = Path(os.environ["WATCHED_DIRECTORY"])
     interval_seconds = float(os.environ["SCAN_INTERVAL_HOURS"]) * 3600
@@ -121,8 +122,10 @@ def main() -> None:
         try:
             with db.from_env() as conn:
                 scan(root, storage, conn, stability_window_seconds)
-        except Exception:
-            logger.exception("watcher scan failed; retrying after %.0f seconds", interval_seconds)
+        except psycopg.Error:
+            logger.exception("watcher scan failed; retrying after %.0f seconds", _RETRY_DELAY_SECONDS)
+            time.sleep(_RETRY_DELAY_SECONDS)
+            continue
         time.sleep(interval_seconds)
 
 
