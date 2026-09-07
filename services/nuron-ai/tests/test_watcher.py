@@ -149,24 +149,26 @@ def test_iter_landable_bounds_read_when_file_grows(
     target.write_bytes(b"small")
     _age_file(target, STABILITY_WINDOW + 1)
     monkeypatch.setattr(watcher, "_MAX_FILE_SIZE_BYTES", 16)
-    original_read = os.read
-    read_sizes: list[int] = []
+    scripted_reads = iter([b"small" + b"x" * 11, b"x" * 9, b""])
+    returned_sizes: list[int] = []
     grew = False
 
     def grow_then_read(file_descriptor: int, count: int) -> bytes:
         nonlocal grew
-        read_sizes.append(count)
         if not grew:
             grew = True
             with target.open("ab") as handle:
                 handle.write(b"x" * 20)
-        return original_read(file_descriptor, count)
+        data = next(scripted_reads)
+        assert len(data) <= count
+        returned_sizes.append(len(data))
+        return data
 
     monkeypatch.setattr(Path, "read_bytes", lambda _self: pytest.fail("unbounded read"))
     monkeypatch.setattr(watcher.os, "read", grow_then_read)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
-    assert max(read_sizes) <= 16
+    assert sum(returned_sizes) <= watcher._MAX_FILE_SIZE_BYTES
 
 
 def test_iter_landable_does_not_utf8_check_pdf(tmp_path: Path) -> None:
@@ -245,19 +247,30 @@ def test_iter_landable_skips_replaced_file_during_read(
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
     original_read = os.read
-    replaced = False
+    original_lstat = Path.lstat
+    original_stat = target.lstat()
+    replacement_stat = MagicMock(
+        spec=os.stat_result,
+        st_dev=original_stat.st_dev + 1,
+        st_ino=original_stat.st_ino + 1,
+        st_size=original_stat.st_size,
+        st_mtime_ns=original_stat.st_mtime_ns,
+    )
+    read_completed = False
 
     def read_then_replace(file_descriptor: int, count: int) -> bytes:
-        nonlocal replaced
+        nonlocal read_completed
         data = original_read(file_descriptor, count)
-        if not replaced:
-            replaced = True
-            target.unlink()
-            target.write_text("original")
-            _age_file(target, STABILITY_WINDOW + 1)
+        read_completed = True
         return data
 
+    def lstat_after_replacement(self: Path) -> os.stat_result:
+        if self == target and read_completed:
+            return replacement_stat
+        return original_lstat(self)
+
     monkeypatch.setattr(watcher.os, "read", read_then_replace)
+    monkeypatch.setattr(Path, "lstat", lstat_after_replacement)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
@@ -268,20 +281,21 @@ def test_iter_landable_skips_when_restat_fails(
     target = tmp_path / "vanished.md"
     target.write_text("original")
     _age_file(target, STABILITY_WINDOW + 1)
-    original_read = os.read
-    deleted = False
+    original_lstat = Path.lstat
+    target_lstat_calls = 0
 
-    def read_then_delete(file_descriptor: int, count: int) -> bytes:
-        nonlocal deleted
-        data = original_read(file_descriptor, count)
-        if not deleted:
-            deleted = True
-            target.unlink()
-        return data
+    def fail_final_lstat(self: Path) -> os.stat_result:
+        nonlocal target_lstat_calls
+        if self == target:
+            target_lstat_calls += 1
+            if target_lstat_calls == 2:
+                raise FileNotFoundError("file vanished after descriptor read")
+        return original_lstat(self)
 
-    monkeypatch.setattr(watcher.os, "read", read_then_delete)
+    monkeypatch.setattr(Path, "lstat", fail_final_lstat)
 
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
+    assert target_lstat_calls == 2
 
 
 def test_iter_landable_skips_when_mtime_changes_during_read(
