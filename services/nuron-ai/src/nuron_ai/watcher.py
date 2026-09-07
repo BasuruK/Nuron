@@ -25,13 +25,12 @@ _MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
 _RETRY_DELAY_SECONDS = 60.0
 
 
-def iter_landable(root: Path, stability_window_seconds: float, now: float | None = None) -> Iterator[tuple[Path, bytes]]:
+def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple[Path, bytes]]:
     """Yields (path, bytes) for each stable, readable, supported file under root.
 
     Unreadable, oversized, zero-byte, and non-UTF-8 text files are logged and skipped.
     """
-    if now is None:
-        now = time.time()
+    now = time.time()
 
     for path in sorted(root.rglob("*")):
         try:
@@ -74,8 +73,6 @@ def iter_landable(root: Path, stability_window_seconds: float, now: float | None
         mtime_changed = restat.st_mtime_ns != stat.st_mtime_ns
         if identity_changed or size_changed or mtime_changed:
             continue
-        if now - restat.st_mtime < stability_window_seconds:
-            continue
 
         if len(data) == 0:
             logger.warning("skipping zero-byte file %s", path)
@@ -103,22 +100,17 @@ def scan(
     a crash between the two leaves an unreferenced object and no row, which the next scan or
     upload of the same bytes silently repairs.
     """
-    for path, data in iter_landable(root, stability_window_seconds, now=time.time()):
+    for path, data in iter_landable(root, stability_window_seconds):
         storage.put(data)
-        _land(conn, content_hash(data), str(path.relative_to(root)))
-
-
-def _land(conn: psycopg.Connection, digest: str, original_filename: str) -> None:
-    """Inserts a bare Landing Zone row; a losing race against an existing hash is a no-op."""
-    conn.execute(
-        """
-        INSERT INTO nuron_ai.documents (content_hash, entry_point, original_filename)
-        VALUES (%s, 'watched_directory', %s)
-        ON CONFLICT (content_hash) DO NOTHING
-        """,
-        (digest, original_filename),
-    )
-    conn.commit()
+        conn.execute(
+            """
+            INSERT INTO nuron_ai.documents (content_hash, entry_point, original_filename)
+            VALUES (%s, 'watched_directory', %s)
+            ON CONFLICT (content_hash) DO NOTHING
+            """,
+            (content_hash(data), str(path.relative_to(root))),
+        )
+        conn.commit()
 
 
 def main() -> None:

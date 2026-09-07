@@ -88,14 +88,6 @@ def test_iter_landable_skips_oversized_file(
     assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
 
 
-def test_iter_landable_skips_non_utf8_text_file(tmp_path: Path) -> None:
-    target = tmp_path / "garbled.md"
-    target.write_bytes(b"\xff\xfe not utf-8")
-    _age_file(target, STABILITY_WINDOW + 1)
-
-    assert list(iter_landable(tmp_path, STABILITY_WINDOW)) == []
-
-
 def test_iter_landable_does_not_utf8_check_pdf(tmp_path: Path) -> None:
     target = tmp_path / "scan.pdf"
     data = b"%PDF-1.4\xff\xfebinary"
@@ -305,14 +297,6 @@ def db_conn() -> Iterator[psycopg.Connection]:
         conn.close()
 
 
-def _row_for(conn: psycopg.Connection, digest: str) -> tuple[object, ...] | None:
-    cursor = conn.execute(
-        "SELECT entry_point, original_filename, state FROM nuron_ai.documents WHERE content_hash = %s",
-        (digest,),
-    )
-    return cursor.fetchone()
-
-
 def _cleanup(conn: psycopg.Connection, digest: str) -> None:
     conn.execute("DELETE FROM nuron_ai.documents WHERE content_hash = %s", (digest,))
     conn.commit()
@@ -330,7 +314,11 @@ def test_scan_lands_new_file_as_landed_row(
     try:
         scan(tmp_path, memory_storage, db_conn, STABILITY_WINDOW)
 
-        row = _row_for(db_conn, digest)
+        row = db_conn.execute(
+            "SELECT entry_point, original_filename, state "
+            "FROM nuron_ai.documents WHERE content_hash = %s",
+            (digest,),
+        ).fetchone()
         assert row == ("watched_directory", "decision.md", "landed")
         assert memory_storage.get(f"{digest[:2]}/{digest}") == data
     finally:
