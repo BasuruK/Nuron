@@ -47,7 +47,12 @@ def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple
             continue
 
         # lstat/fstat identity checks fail closed where O_NOFOLLOW is unavailable (Windows).
-        open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        open_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         try:
             file_descriptor = os.open(path, open_flags)
         except OSError as err:
@@ -131,17 +136,27 @@ def scan(
     a crash between the two leaves an unreferenced object and no row, which the next scan or
     upload of the same bytes silently repairs.
     """
+    first_error: Exception | None = None
     for path, data in iter_landable(root, stability_window_seconds):
-        storage.put(data)
-        conn.execute(
-            """
-            INSERT INTO nuron_ai.documents (content_hash, entry_point, original_filename)
-            VALUES (%s, 'watched_directory', %s)
-            ON CONFLICT (content_hash) DO NOTHING
-            """,
-            (content_hash(data), str(path.relative_to(root))),
-        )
-        conn.commit()
+        try:
+            storage.put(data)
+            conn.execute(
+                """
+                INSERT INTO nuron_ai.documents (content_hash, entry_point, original_filename)
+                VALUES (%s, 'watched_directory', %s)
+                ON CONFLICT (content_hash) DO NOTHING
+                """,
+                (content_hash(data), str(path.relative_to(root))),
+            )
+            conn.commit()
+        except Exception as err:
+            logger.exception("failed to land watched file %s", path)
+            if first_error is None:
+                first_error = err
+            conn.rollback()
+
+    if first_error is not None:
+        raise first_error
 
 
 def main() -> None:
@@ -159,6 +174,7 @@ def main() -> None:
             with db.from_env() as conn:
                 scan(root, storage, conn, stability_window_seconds)
         except Exception:
+            storage = None
             logger.exception("watcher scan failed; retrying after %.0f seconds", _RETRY_DELAY_SECONDS)
             time.sleep(_RETRY_DELAY_SECONDS)
             continue

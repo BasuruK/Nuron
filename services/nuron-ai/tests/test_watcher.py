@@ -1,10 +1,13 @@
 import hashlib
 import os
+import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import MagicMock, call
 
 import fsspec
 import psycopg
@@ -78,6 +81,41 @@ def test_iter_landable_skips_symlink_to_file_outside_root(tmp_path: Path) -> Non
         pytest.skip(f"symlinks unavailable: {err}")
 
     assert list(iter_landable(watched, STABILITY_WINDOW)) == []
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
+    reason="FIFO non-blocking open unavailable",
+)
+def test_iter_landable_does_not_block_when_file_is_replaced_by_fifo(tmp_path: Path) -> None:
+    target = tmp_path / "replaced.md"
+    target.write_text("# Original\n")
+    _age_file(target, STABILITY_WINDOW + 1)
+    script = """
+import os
+import sys
+from pathlib import Path
+
+from nuron_ai import watcher
+
+root = Path(sys.argv[1])
+target = root / "replaced.md"
+original_open = os.open
+replaced = False
+
+def replace_then_open(path, flags, *args, **kwargs):
+    global replaced
+    if Path(path) == target and not replaced:
+        replaced = True
+        target.unlink()
+        os.mkfifo(target)
+    return original_open(path, flags, *args, **kwargs)
+
+watcher.os.open = replace_then_open
+assert list(watcher.iter_landable(root, 30.0)) == []
+"""
+
+    subprocess.run([sys.executable, "-c", script, str(tmp_path)], check=True, timeout=5)
 
 
 def test_iter_landable_skips_zero_byte_file(tmp_path: Path) -> None:
@@ -298,9 +336,11 @@ def test_main_retries_after_transient_backend_failure(
     monkeypatch.setenv("SCAN_INTERVAL_HOURS", "1")
     monkeypatch.setenv("MTIME_STABILITY_WINDOW_SECONDS", "30")
     storage_attempts = 0
+    created_storages: list[object] = []
     connection = object()
     connection_attempts = 0
     scan_attempts = 0
+    scan_storages: list[object] = []
     sleep_delays: list[float] = []
 
     def create_storage() -> object:
@@ -308,7 +348,9 @@ def test_main_retries_after_transient_backend_failure(
         storage_attempts += 1
         if failure_site == "storage" and storage_attempts == 1:
             raise failure
-        return object()
+        storage = object()
+        created_storages.append(storage)
+        return storage
 
     def connect() -> nullcontext[object]:
         nonlocal connection_attempts
@@ -320,6 +362,7 @@ def test_main_retries_after_transient_backend_failure(
     def run_scan(*args: object) -> None:
         nonlocal scan_attempts
         scan_attempts += 1
+        scan_storages.append(args[1])
         if failure_site == "scan" and scan_attempts == 1:
             raise failure
 
@@ -336,13 +379,34 @@ def test_main_retries_after_transient_backend_failure(
     with pytest.raises(KeyboardInterrupt):
         watcher.main()
 
-    assert storage_attempts == (2 if failure_site == "storage" else 1)
+    assert storage_attempts == 2
     assert connection_attempts == (1 if failure_site == "storage" else 2)
     if failure_site in {"storage", "connect"}:
         assert scan_attempts == 1
     else:
         assert scan_attempts == 2
+        assert scan_storages == created_storages
     assert sleep_delays == [60.0, 3600.0]
+
+
+def test_scan_continues_after_file_failure_then_raises(tmp_path: Path) -> None:
+    failing = tmp_path / "a-failing.md"
+    valid = tmp_path / "b-valid.md"
+    failing.write_bytes(b"# Failing\n")
+    valid.write_bytes(b"# Valid\n")
+    for path in (failing, valid):
+        _age_file(path, STABILITY_WINDOW + 1)
+    storage = MagicMock(spec=ObjectStorage)
+    storage.put.side_effect = [OSError("RustFS rejected first file"), "stored"]
+    conn = MagicMock(spec=psycopg.Connection)
+
+    with pytest.raises(OSError, match="RustFS rejected first file"):
+        scan(tmp_path, storage, conn, STABILITY_WINDOW)
+
+    assert storage.put.call_args_list == [call(b"# Failing\n"), call(b"# Valid\n")]
+    assert conn.execute.call_args.args[1][1] == "b-valid.md"
+    conn.commit.assert_called_once_with()
+    conn.rollback.assert_called_once_with()
 
 
 # -- scan: lands rows in Postgres, gated behind real infra -------------------
