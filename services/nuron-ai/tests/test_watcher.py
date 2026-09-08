@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import time
-import traceback
 import uuid
 from collections.abc import Iterator
 from contextlib import nullcontext
@@ -407,24 +406,42 @@ def test_main_retries_after_transient_backend_failure(
 def test_scan_continues_after_file_failure_then_raises(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    failing = tmp_path / "a-failing.md"
-    valid = tmp_path / "b-valid.md"
-    failing.write_bytes(b"# Failing\n")
-    valid.write_bytes(b"# Valid\n")
-    for path in (failing, valid):
+    first_failing = tmp_path / "a-first-failing.md"
+    first_valid = tmp_path / "b-first-valid.md"
+    second_failing = tmp_path / "c-second-failing.md"
+    second_valid = tmp_path / "d-second-valid.md"
+    first_failing.write_bytes(b"# First failing\n")
+    first_valid.write_bytes(b"# First valid\n")
+    second_failing.write_bytes(b"# Second failing\n")
+    second_valid.write_bytes(b"# Second valid\n")
+    for path in (first_failing, first_valid, second_failing, second_valid):
         _age_file(path, STABILITY_WINDOW + 1)
     storage = MagicMock(spec=ObjectStorage)
-    storage.put.side_effect = [OSError("RustFS rejected first file"), "stored"]
+    storage.put.side_effect = [
+        OSError("RustFS rejected first file"),
+        "stored",
+        OSError("RustFS rejected second file"),
+        "stored",
+    ]
     conn = MagicMock(spec=psycopg.Connection)
 
     with pytest.raises(OSError, match="RustFS rejected first file") as raised:
         scan(tmp_path, storage, conn, STABILITY_WINDOW)
 
-    assert storage.put.call_args_list == [call(b"# Failing\n"), call(b"# Valid\n")]
-    assert conn.execute.call_args.args[1][1] == "b-valid.md"
-    conn.commit.assert_called_once_with()
-    conn.rollback.assert_called_once_with()
-    assert failing.name in "".join(traceback.format_exception(raised.value))
+    assert storage.put.call_args_list == [
+        call(b"# First failing\n"),
+        call(b"# First valid\n"),
+        call(b"# Second failing\n"),
+        call(b"# Second valid\n"),
+    ]
+    landed_names = [execute_call.args[1][1] for execute_call in conn.execute.call_args_list]
+    assert landed_names == [first_valid.name, second_valid.name]
+    assert conn.commit.call_count == 2
+    assert conn.rollback.call_count == 2
+    assert raised.value.__notes__ == [
+        f"failed to land watched file {first_failing}: OSError: RustFS rejected first file",
+        f"failed to land watched file {second_failing}: OSError: RustFS rejected second file",
+    ]
     assert caplog.records == []
 
 
@@ -467,6 +484,42 @@ def test_scan_lands_reachable_file_then_raises_traversal_failure(
     storage.put.assert_called_once_with(data)
     assert conn.execute.call_args.args[1][1] == valid.name
     conn.commit.assert_called_once_with()
+
+
+def test_scan_retains_landing_and_deferred_traversal_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing = tmp_path / "a-failing.md"
+    reachable = tmp_path / "b-reachable.md"
+    failing_data = b"# Failing\n"
+    reachable_data = b"# Reachable\n"
+
+    def landable_files(
+        _root: Path, _stability_window_seconds: float
+    ) -> Iterator[tuple[Path, bytes]]:
+        yield failing, failing_data
+        yield reachable, reachable_data
+        raise PermissionError("cannot enumerate deferred-subtree")
+
+    monkeypatch.setattr(watcher, "iter_landable", landable_files)
+    storage = MagicMock(spec=ObjectStorage)
+    storage.put.side_effect = [OSError("RustFS rejected failing file"), "stored"]
+    conn = MagicMock(spec=psycopg.Connection)
+
+    with pytest.raises(OSError, match="RustFS rejected failing file") as raised:
+        scan(tmp_path, storage, conn, STABILITY_WINDOW)
+
+    storage.put.assert_has_calls([call(failing_data), call(reachable_data)])
+    assert conn.execute.call_args.args[1][1] == reachable.name
+    conn.commit.assert_called_once_with()
+    conn.rollback.assert_called_once_with()
+    assert raised.value.__notes__ == [
+        f"failed to land watched file {failing}: OSError: RustFS rejected failing file",
+        (
+            "watched directory traversal also failed: "
+            "PermissionError: cannot enumerate deferred-subtree"
+        ),
+    ]
 
 
 # -- scan: lands rows in Postgres, gated behind real infra -------------------

@@ -152,7 +152,21 @@ def scan(
     upload of the same bytes silently repairs.
     """
     first_error: Exception | None = None
-    for path, data in iter_landable(root, stability_window_seconds):
+    landable_files = iter_landable(root, stability_window_seconds)
+    while True:
+        try:
+            path, data = next(landable_files)
+        except StopIteration:
+            break
+        except OSError as traversal_error:
+            if first_error is None:
+                raise
+            first_error.add_note(
+                "watched directory traversal also failed: "
+                f"{type(traversal_error).__name__}: {traversal_error}"
+            )
+            break
+
         try:
             storage.put(data)
             conn.execute(
@@ -167,7 +181,9 @@ def scan(
         except Exception as err:
             if first_error is None:
                 first_error = err
-                first_error.add_note(f"failed to land watched file {path}")
+            first_error.add_note(
+                f"failed to land watched file {path}: {type(err).__name__}: {err}"
+            )
             conn.rollback()
 
     if first_error is not None:
