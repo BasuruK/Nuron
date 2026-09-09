@@ -5,7 +5,6 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 """
 
 import os
-import time
 from dataclasses import dataclass
 
 import fsspec
@@ -13,16 +12,8 @@ from fsspec.spec import AbstractFileSystem
 
 from nuron_ai.core import content_hash, object_key
 
-_REMOVE_ATTEMPTS = 3
-_REMOVE_RETRY_DELAY_S = 0.05
-
-
 class CorruptedWriteError(RuntimeError):
     """Raised when a stored object's read-back hash does not match what was put."""
-
-
-class CleanupError(RuntimeError):
-    """Raised when put cannot remove objects this call created."""
 
 
 @dataclass(frozen=True)
@@ -37,14 +28,6 @@ class ObjectStorage:
         digest = content_hash(data)
         key = object_key(digest)
         path = f"{self.root}/{key}"
-        if self.fs.exists(path):
-            try:
-                return self._ack(key)
-            except CorruptedWriteError:
-                # Overwrite in place. Deleting would race a peer's already-acked repair.
-                self.fs.pipe_file(path, data, mode="overwrite")
-                return self._ack(key)
-
         try:
             self.fs.pipe_file(path, data, mode="create")
         except FileExistsError:
@@ -68,22 +51,6 @@ class ObjectStorage:
         """Returns key once get() has read back and integrity-checked the object."""
         self.get(key)
         return key
-
-    def _remove(self, path: str) -> None:
-        """Deletes path if present; retries with a bounded delay, then raises the last error."""
-        last: Exception | None = None
-        for attempt in range(_REMOVE_ATTEMPTS):
-            try:
-                if self.fs.exists(path):
-                    self.fs.rm(path, recursive=True)
-                return
-            except Exception as err:
-                last = err
-                if attempt + 1 < _REMOVE_ATTEMPTS:
-                    time.sleep(_REMOVE_RETRY_DELAY_S)
-        assert last is not None
-        raise last
-
 
 def from_uri(uri: str, **storage_options: object) -> ObjectStorage:
     """Resolves an fsspec filesystem + bucket root from a URI and ensures the bucket exists."""

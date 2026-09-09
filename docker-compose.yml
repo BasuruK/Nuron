@@ -36,8 +36,9 @@ services:
       - postgres_data:/var/lib/postgresql
       - ./schema/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./scripts/postgres-healthcheck.sh:/usr/local/bin/nuron-postgres-healthcheck:ro
-    # ports:
-    #   - "127.0.0.1:5432:5432"
+    ports:
+      # ponytail: host-published Postgres until nuron-ai joins the `nuron` network (NU-005).
+      - "127.0.0.1:5432:5432"
     networks:
       - nuron
     healthcheck:

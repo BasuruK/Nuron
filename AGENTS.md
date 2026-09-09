@@ -26,3 +26,7 @@ Style and judgment calls — simplicity-first, comment/type rules, testing philo
 Prefer lean-ctx MCP tools over native equivalents for token savings.
 Full rules: @LEAN-CTX.md
 <!-- /lean-ctx -->
+
+## Learned User Preferences
+
+- Reject tautological tests (assertions that only restate mocks/fixtures or still pass if the production guarantee is removed); regressions must fail under a concrete production mutation.
