@@ -115,7 +115,13 @@ watcher.os.open = replace_then_open
 assert list(watcher.iter_landable(root, 30.0)) == []
 """
 
-    subprocess.run([sys.executable, "-c", script, str(tmp_path)], check=True, timeout=5)
+    # The argv form bypasses the shell; every value is owned by this test.
+    subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        [sys.executable, "-c", script, str(tmp_path)],
+        check=True,
+        shell=False,
+        timeout=5,
+    )
 
 
 def test_iter_landable_skips_zero_byte_file(tmp_path: Path) -> None:

@@ -17,3 +17,6 @@ __pycache__/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
 .cursor/hooks/state
+
+#Ignore cursor AI rules
+.cursor/rules/codacy.mdc
