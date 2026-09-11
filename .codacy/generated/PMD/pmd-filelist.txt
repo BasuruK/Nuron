@@ -1,0 +1,1 @@
+/Users/basuruk/Dev/Nuron/Nuron/schema/schema.sql

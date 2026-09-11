@@ -1,40 +1,6 @@
-#!/usr/bin/env bash
-
-
-set -e +o pipefail
-
-# Set up paths first
-bin_name="codacy-cli-v2"
-
-# Determine OS-specific paths
-os_name=$(uname)
-arch=$(uname -m)
-
-case "$arch" in
-"x86_64")
-  arch="amd64"
-  ;;
-"x86")
-  arch="386"
-  ;;
-"aarch64"|"arm64")
-  arch="arm64"
-  ;;
-esac
-
-if [ -z "$CODACY_CLI_V2_TMP_FOLDER" ]; then
-    if [ "$(uname)" = "Linux" ]; then
-        CODACY_CLI_V2_TMP_FOLDER="$HOME/.cache/codacy/codacy-cli-v2"
-    elif [ "$(uname)" = "Darwin" ]; then
-        CODACY_CLI_V2_TMP_FOLDER="$HOME/Library/Caches/Codacy/codacy-cli-v2"
-    else
-        CODACY_CLI_V2_TMP_FOLDER=".codacy-cli-v2"
-    fi
-fi
-
-version_file="$CODACY_CLI_V2_TMP_FOLDER/version.yaml"
-
-
+cli.sh 158L cognitive
+// /Users/basuruk/Dev/Nuron/Nuron/.codacy/cli.sh
+§ function function (L39-L48)
 get_version_from_yaml() {
     if [ -f "$version_file" ]; then
         local version=$(grep -o 'version: *"[^"]*"' "$version_file" | cut -d'"' -f2)
@@ -45,47 +11,55 @@ get_version_from_yaml() {
     fi
     return 1
 }
-
+// ... 1 lines omitted
+§ function function (L50-L61)
 get_latest_version() {
     local response
     if [ -n "$GH_TOKEN" ]; then
-        response=$(curl -Lq --header "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/codacy/codacy-cli-v2/releases/latest" 2>/dev/null)
+        response=$(curl -f -Lq --header "Authorization: Bearer [REDACTED:Authorization header] "https://api.github.com/repos/codacy/codacy-cli-v2/releases/latest")
     else
-        response=$(curl -Lq "https://api.github.com/repos/codacy/codacy-cli-v2/releases/latest" 2>/dev/null)
+        response=$(curl -f -Lq "https://api.github.com/repos/codacy/codacy-cli-v2/releases/latest")
     fi
 
     handle_rate_limit "$response"
     local version=$(echo "$response" | grep -m 1 tag_name | cut -d'"' -f4)
     echo "$version"
 }
-
+// ... 1 lines omitted
+§ function function (L63-L68)
 handle_rate_limit() {
     local response="$1"
     if echo "$response" | grep -q "API rate limit exceeded"; then
           fatal "Error: GitHub API rate limit exceeded. Please try again later"
     fi
 }
-
+// ... 1 lines omitted
+§ function function (L70-L84)
 download_file() {
     local url="$1"
 
     echo "Downloading from URL: ${url}"
     if command -v curl > /dev/null 2>&1; then
-        curl -# -LS "$url" -O
+        if ! curl -# -LSf "$url" -O; then
+            rm -f "$(basename "$url")"
+            return 1
+        fi
     elif command -v wget > /dev/null 2>&1; then
         wget "$url"
     else
         fatal "Error: Could not find curl or wget, please install one."
     fi
 }
-
+// ... 1 lines omitted
+§ function function (L86-L91)
 download() {
     local url="$1"
     local output_folder="$2"
 
     ( cd "$output_folder" && download_file "$url" )
 }
-
+// ... 1 lines omitted
+§ function function (L93-L110)
 download_cli() {
     # OS name lower case
     suffix=$(echo "$os_name" | tr '[:upper:]' '[:lower:]')
@@ -104,6 +78,7 @@ download_cli() {
         tar xzfv "${bin_folder}/${remote_file}" -C "${bin_folder}"
     fi
 }
+§ block block (L111-L158)
 
 # Warn if CODACY_CLI_V2_VERSION is set and update is requested
 if [ -n "$CODACY_CLI_V2_VERSION" ] && [ "$1" = "update" ]; then
@@ -115,8 +90,13 @@ fi
 if [ ! -f "$version_file" ] || [ "$1" = "update" ]; then
     echo "ℹ️  Fetching latest version..."
     version=$(get_latest_version)
+    if [ -z "$version" ]; then
+        echo "Error: Failed to retrieve a valid release version" >&2
+        exit 1
+    fi
     mkdir -p "$CODACY_CLI_V2_TMP_FOLDER"
-    echo "version: \"$version\"" > "$version_file"
+    echo "version: \"$version\"" > "${version_file}.tmp"
+    mv "${version_file}.tmp" "$version_file"
 fi
 
 # Set the version to use
@@ -145,5 +125,7 @@ fi
 if [ "$#" -eq 1 ] && [ "$1" = "download" ]; then
     echo "Codacy cli v2 download succeeded"
 else
-    eval "$run_command $*"
+    exec "$run_command" "$@"
 fi
+7/8 chunks shown (969 tokens)
+[lean-ctx] full source: read "/Users/basuruk/Dev/Nuron/Nuron/.codacy/cli.sh" directly (no MCP)  ·  or ctx_read("/Users/basuruk/Dev/Nuron/Nuron/.codacy/cli.sh", mode="full")
