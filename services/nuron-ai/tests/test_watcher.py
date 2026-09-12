@@ -1,7 +1,6 @@
 import hashlib
 import os
-import subprocess
-import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -87,41 +86,47 @@ def test_iter_landable_skips_symlink_to_file_outside_root(tmp_path: Path) -> Non
     not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"),
     reason="FIFO non-blocking open unavailable",
 )
-def test_iter_landable_does_not_block_when_file_is_replaced_by_fifo(tmp_path: Path) -> None:
+def test_iter_landable_does_not_block_when_file_is_replaced_by_fifo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = tmp_path / "replaced.md"
     target.write_text("# Original\n")
     _age_file(target, STABILITY_WINDOW + 1)
-    script = """
-import os
-import sys
-from pathlib import Path
+    original_open = os.open
+    replaced = False
 
-from nuron_ai import watcher
+    def replace_then_open(
+        path: str | bytes | os.PathLike[str], flags: int, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal replaced
+        if Path(path) == target and not replaced:
+            replaced = True
+            target.unlink()
+            os.mkfifo(target)
+        return original_open(path, flags, *args, **kwargs)
 
-root = Path(sys.argv[1])
-target = root / "replaced.md"
-original_open = os.open
-replaced = False
+    monkeypatch.setattr(watcher.os, "open", replace_then_open)
 
-def replace_then_open(path, flags, *args, **kwargs):
-    global replaced
-    if Path(path) == target and not replaced:
-        replaced = True
-        target.unlink()
-        os.mkfifo(target)
-    return original_open(path, flags, *args, **kwargs)
+    landed: list[tuple[Path, bytes]] | None = None
+    error: BaseException | None = None
+    done = threading.Event()
 
-watcher.os.open = replace_then_open
-assert list(watcher.iter_landable(root, 30.0)) == []
-"""
+    def run() -> None:
+        nonlocal landed, error
+        try:
+            landed = list(iter_landable(tmp_path, STABILITY_WINDOW))
+        except BaseException as err:
+            error = err
+        finally:
+            done.set()
 
-    # The argv form bypasses the shell; every value is owned by this test.
-    subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-        [sys.executable, "-c", script, str(tmp_path)],
-        check=True,
-        shell=False,
-        timeout=5,
-    )
+    # Blocking FIFO open freezes the caller. Fail if that regresses.
+    threading.Thread(target=run, daemon=True).start()
+    if not done.wait(5):
+        pytest.fail("iter_landable blocked after the file was replaced by a FIFO")
+    if error is not None:
+        raise error
+    assert landed == []
 
 
 def test_iter_landable_skips_zero_byte_file(tmp_path: Path) -> None:
