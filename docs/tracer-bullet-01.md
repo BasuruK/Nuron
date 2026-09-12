@@ -72,7 +72,7 @@ comment rather than a constraint, with `nuron-ai` unable to migrate a table with
                  │                          read back + re-hash before ack
                  ▼
         format extractor (per type) ───────  .md/.txt passthrough
-                 │                           .docx → DocxReader
+                 │                           .docx → word/document.xml (stdlib)
                  │                           .pdf  → LlamaParse (configurable, not default)
                  ▼
         common form: markdown ────────────── every format converges here
@@ -225,7 +225,7 @@ paused.
 | LLM | `OpenAILike` — configurable `base_url`, `api_key`, `model` | Not `OpenAI`; compatible endpoints need explicit `is_chat_model` / `is_function_calling_model` flags. **Startup check must verify structured output works** — `SchemaLLMPathExtractor` depends on it. Fail loudly at boot, not at 3am on malformed triples. |
 | Embeddings | `text-embedding-3-large`, `dimensions=1024` | Exactly §5.2's floor. **One-way door**: dimension is baked into the Neo4j vector index; changing it means re-embedding everything and rebuilding the index. Store the embedding model id **on each node** so a partial migration is detectable. Revisit only if accuracy drops. |
 | Object storage | RustFS, S3 API, via `fsspec`/`s3fs` | LlamaIndex already depends on `fsspec`, so the backend is a URI. Keeps MinIO/S3 as drop-in alternatives if RustFS's Beta bites. |
-| PDF extractor | LlamaParse via `llama-cloud`, `tier` + `expand=["markdown"]` (`markdown_full`) | **Off by default in shipped config.** Returns markdown, so PDFs converge on the same header parse as `.md`. NU-006: the `llama-parse`/`llama-cloud-services` packages this row originally assumed (`result_type="markdown"`) are deprecated upstream in favor of the unified `llama-cloud>=1.0` SDK, whose `parsing.parse(tier=..., expand=["markdown"])` replaces `result_type`; `tier` (`fast`/`cost_effective`/`agentic`/`agentic_plus`) is the new per-page cost/quality knob -- see `LLAMA_PARSE_TIER` in `.env.example` and §7 below. |
+| PDF extractor | LlamaParse via `llama-cloud`, `tier` + `expand=["markdown"]` (`markdown_full`) | **Off by default in shipped config.** Returns markdown, so PDFs converge on the same header parse as `.md`. `tier` is the per-page cost/quality knob (`LLAMA_PARSE_TIER` in `.env.example`); pricing watch in §7. |
 | Scan interval | 24 hours | Directory ingest only; uploads are immediate. |
 | mtime stability window | 30 seconds | **Decoupled from scan interval.** FR-1 ties them together; at a 24h interval that would mean ~48h worst case from drop to review queue. |
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
@@ -246,8 +246,9 @@ Use the library, don't rebuild it:
   `possible_relations=Literal["SUPERSEDES","EVIDENCED_BY","AFFECTS","DEPENDS_ON","PART_OF"]`,
   `kg_validation_schema={...}`, `strict=True`. Pydantic-validated typed triples — decision 3's
   guardrail enforced by the library rather than by prompt discipline.
-- **`file_extractor` dict** on `SimpleDirectoryReader` — the format seam. `DocxReader` for
-  `.docx`; LlamaParse registered against `.pdf` when configured. Defaults cover `.pdf`, `.docx`,
+- **`file_extractor` dict** on `SimpleDirectoryReader` — no longer the format seam: NU-006's
+  extraction worker owns format conversion (stdlib `.docx` read, `llama-cloud` for `.pdf`).
+  Relevant only if a later stage re-reads originals directly. Defaults cover `.pdf`, `.docx`,
   `.pptx`, `.hwp` — **`.doc` is not in the map** and would need LibreOffice.
 - Known, deliberately unused: `DynamicLLMPathExtractor`, `ImplicitPathExtractor`,
   `LLMSynonymRetriever` (cheaper stand-in for the deferred BM25 source), `TextToCypherRetriever`
@@ -433,6 +434,10 @@ Marked here so they are deferred rather than forgotten.
    Needs calibration against a real corpus; pick a conservative starting value and log rejections.
 2. **LlamaParse credit accounting** — credits are consumed per page and vary by parse mode, so
    verify the headroom against current pricing rather than assuming a per-document rate.
+   (NU-006: the `llama-parse`/`llama-cloud-services` packages this plan originally assumed
+   (`result_type="markdown"`) are deprecated upstream in favor of the unified `llama-cloud>=1.0`
+   SDK; `parsing.parse(tier=..., expand=["markdown"])` replaces `result_type`, and `tier`
+   (`fast`/`cost_effective`/`agentic`/`agentic_plus`) is the per-page cost/quality knob.)
 3. **RustFS maturity watch.** Beta; its own README marks distributed mode, lifecycle management
    and KMS *"Under Testing."* Accepted knowingly. Because storage goes through `fsspec`, MinIO or
    S3 remain drop-in alternatives if it bites. **Uploaded documents have no second copy** — the
