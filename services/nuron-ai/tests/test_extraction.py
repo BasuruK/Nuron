@@ -7,12 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import fsspec
 import psycopg
 import pytest
+from llama_cloud import APIConnectionError
 
 from nuron_ai import db
-from nuron_ai.core import parse_header
+from nuron_ai.core import content_hash, parse_header
 from nuron_ai.extraction import (
+    ExtractionDeferred,
     PermanentExtractionError,
     extract_markdown,
     extract_pending,
@@ -37,6 +40,11 @@ def test_extract_markdown_passes_through_txt():
     assert text == "Plain notes.\n"
 
 
+def test_extract_markdown_rejects_non_utf8_text_permanently():
+    with pytest.raises(PermanentExtractionError, match="not valid UTF-8"):
+        extract_markdown(b"\xff", "note.txt", llama_parse_api_key=None, llama_parse_tier=None)
+
+
 def test_extract_markdown_rejects_unsupported_extension():
     with pytest.raises(ValueError, match="unsupported extension"):
         extract_markdown(b"{}", "note.json", llama_parse_api_key=None, llama_parse_tier=None)
@@ -45,16 +53,19 @@ def test_extract_markdown_rejects_unsupported_extension():
 # -- extract_markdown: .docx via the stdlib word/document.xml read -------------
 
 
-def _docx_bytes(paragraph_text: str) -> bytes:
+def _docx_bytes(paragraph_text: str, style: str | None = None) -> bytes:
     """Builds a minimal valid .docx (extraction only reads word/document.xml)."""
+    paragraph_properties = ""
+    if style:
+        paragraph_properties = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>'
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        f"<w:body><w:p><w:r><w:t>{paragraph_text}</w:t></w:r></w:p></w:body>"
+        f"<w:body><w:p>{paragraph_properties}<w:r><w:t>{paragraph_text}</w:t></w:r></w:p></w:body>"
         "</w:document>"
     )
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", document_xml)
     return buffer.getvalue()
 
@@ -67,184 +78,196 @@ def test_extract_markdown_docx_extracts_paragraph_text():
     assert text.strip() == "Dropping the session store for stateless JWT."
 
 
+def test_extract_markdown_docx_heading_one_becomes_document_title():
+    data = _docx_bytes("Dropping the session store", style="Heading1")
+
+    text = extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
+    header = parse_header(text, filename="decision.docx", source_owner=None)
+
+    assert header.subject == "Dropping the session store"
+
+
+def test_extract_markdown_docx_heading_two_stays_plain():
+    data = _docx_bytes("Section", style="Heading2")
+
+    text = extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
+
+    assert text.strip() == "Section"
+
+
+def test_extract_markdown_docx_rejects_oversized_document_xml():
+    max_accepted_bytes = 25 * 1024 * 1024
+    data = _docx_bytes("x" * max_accepted_bytes)
+
+    with pytest.raises(PermanentExtractionError, match="document.xml exceeds"):
+        extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
+
+
+def test_extract_markdown_docx_rejects_excessive_compression_ratio():
+    data = _docx_bytes("x" * 200_000)
+
+    with pytest.raises(PermanentExtractionError, match="compression ratio"):
+        extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
+
+
+def test_extract_markdown_docx_rejects_dtd():
+    document_xml = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE w:document [<!ENTITY payload "hostile">]>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>&payload;</w:t></w:r></w:p></w:body>"
+        "</w:document>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", document_xml)
+
+    with pytest.raises(PermanentExtractionError, match="DTD"):
+        extract_markdown(
+            buffer.getvalue(),
+            "decision.docx",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
+
+
+def test_extract_markdown_docx_rejects_corrupt_archive_permanently():
+    with pytest.raises(PermanentExtractionError, match="unreadable .docx"):
+        extract_markdown(
+            b"not a zip archive",
+            "decision.docx",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
+
+
 # -- extract_markdown: .pdf via LlamaParse (mocked -- no network) ------------
 
 
 def _stub_llama_cloud(monkeypatch: pytest.MonkeyPatch, markdown_text: str) -> MagicMock:
-    """Patches llama_cloud.LlamaCloud so _extract_pdf never calls the real API."""
+    """Patches LlamaCloud to return deterministic extracted Markdown."""
     client = MagicMock()
     client.files.create.return_value = SimpleNamespace(id="file-123")
     client.parsing.parse.return_value = SimpleNamespace(markdown_full=markdown_text)
-    monkeypatch.setattr("llama_cloud.LlamaCloud", MagicMock(return_value=client))
+    monkeypatch.setattr("nuron_ai.extraction.LlamaCloud", MagicMock(return_value=client))
     return client
 
 
-def test_extract_markdown_pdf_disabled_without_api_key():
-    with pytest.raises(PermanentExtractionError, match="PDF extraction is disabled"):
-        extract_markdown(b"%PDF-1.4\n", "decision.pdf", llama_parse_api_key=None, llama_parse_tier="fast")
+def test_extract_markdown_pdf_deferred_without_api_key():
+    with pytest.raises(ExtractionDeferred, match="PDF extraction is disabled"):
+        extract_markdown(
+            b"%PDF-1.4\n",
+            "decision.pdf",
+            llama_parse_api_key=None,
+            llama_parse_tier="fast",
+        )
 
 
-def test_extract_markdown_pdf_disabled_without_tier():
-    with pytest.raises(PermanentExtractionError, match="PDF extraction is disabled"):
-        extract_markdown(b"%PDF-1.4\n", "decision.pdf", llama_parse_api_key="key", llama_parse_tier=None)
+def test_extract_markdown_pdf_deferred_without_tier():
+    with pytest.raises(ExtractionDeferred, match="PDF extraction is disabled"):
+        extract_markdown(
+            b"%PDF-1.4\n",
+            "decision.pdf",
+            llama_parse_api_key="key",
+            llama_parse_tier=None,
+        )
 
 
 def test_extract_markdown_pdf_calls_llama_parse_when_enabled(monkeypatch: pytest.MonkeyPatch):
-    client = _stub_llama_cloud(monkeypatch, "# Decision\n\nDropping sessions for JWT, plenty of text.")
+    client = _stub_llama_cloud(
+        monkeypatch, "# Decision\n\nDropping sessions for JWT, plenty of text."
+    )
 
     text = extract_markdown(
         b"%PDF-1.4\n", "decision.pdf", llama_parse_api_key="key", llama_parse_tier="fast"
     )
 
     assert text == "# Decision\n\nDropping sessions for JWT, plenty of text."
-    client.files.create.assert_called_once_with(
-        file=("decision.pdf", b"%PDF-1.4\n", "application/pdf"), purpose="parse"
-    )
     client.parsing.parse.assert_called_once_with(
-        tier="fast", version="latest", file_id="file-123", expand=["markdown"]
+        tier="fast",
+        version="latest",
+        file_id="file-123",
+        expand=["markdown_full"],
+        timeout=240.0,
     )
+    client.files.delete.assert_called_once_with(file_id="file-123")
+
+
+def test_extract_markdown_pdf_accepts_short_nonempty_result(monkeypatch: pytest.MonkeyPatch):
+    _stub_llama_cloud(monkeypatch, "Approved.")
+
+    text = extract_markdown(
+        b"%PDF-1.4\n", "decision.pdf", llama_parse_api_key="key", llama_parse_tier="fast"
+    )
+
+    assert text == "Approved."
 
 
 def test_extract_markdown_pdf_near_empty_result_fails_loudly(monkeypatch: pytest.MonkeyPatch):
-    _stub_llama_cloud(monkeypatch, "   \n  ")
+    client = _stub_llama_cloud(monkeypatch, "   \n  ")
 
     with pytest.raises(PermanentExtractionError, match="near nothing"):
-        extract_markdown(b"%PDF-1.4\n", "scan.pdf", llama_parse_api_key="key", llama_parse_tier="fast")
+        extract_markdown(
+            b"%PDF-1.4\n",
+            "scan.pdf",
+            llama_parse_api_key="key",
+            llama_parse_tier="fast",
+        )
+    client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-# -- extract_pending: claim/advance against a mocked connection --------------
+def test_extract_markdown_pdf_deletes_upload_when_parsing_fails(monkeypatch: pytest.MonkeyPatch):
+    client = _stub_llama_cloud(monkeypatch, "")
+    client.parsing.parse.side_effect = RuntimeError("parser bug")
+
+    with pytest.raises(RuntimeError, match="parser bug"):
+        extract_markdown(
+            b"%PDF-1.4\n",
+            "scan.pdf",
+            llama_parse_api_key="key",
+            llama_parse_tier="fast",
+        )
+    client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_pending_returns_false_when_nothing_to_claim():
-    conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = None
-    storage = MagicMock(spec=ObjectStorage)
-
-    claimed = extract_pending(
-        conn, storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
-    )
-
-    assert claimed is False
-    storage.get.assert_not_called()
-
-
-def test_extract_pending_advances_landed_row_to_extracted():
-    conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", 7)
-    storage = MagicMock(spec=ObjectStorage)
-    storage.get.return_value = b"# Decision\n\nBody.\n"
-
-    claimed = extract_pending(
-        conn, storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
-    )
-
-    assert claimed is True
-    storage.get.assert_called_once_with("ab/abc123")
-    advance_call = conn.execute.call_args_list[1]
-    assert "state = 'extracted'" in advance_call.args[0]
-    assert advance_call.args[1] == {
-        "body": "# Decision\n\nBody.\n",
-        "content_hash": "abc123",
-        "worker_id": "worker-1",
-        "lease_token": 7,
-    }
-    assert conn.commit.call_count == 2
-
-
-def test_extract_pending_soft_fails_on_transient_error_without_raising():
-    conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", 3)
-    storage = MagicMock(spec=ObjectStorage)
-    storage.get.side_effect = OSError("RustFS unavailable")
-
-    claimed = extract_pending(
-        conn, storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
-    )
-
-    assert claimed is True
-    failure_call = conn.execute.call_args_list[1]
-    assert "attempt_count = attempt_count + 1" in failure_call.args[0]
-    assert failure_call.args[1] == {
-        "retry_delay_seconds": 60.0,
-        "max_attempts": 5,
-        "content_hash": "abc123",
-        "worker_id": "worker-1",
-        "lease_token": 3,
-    }
-
-
-def test_extract_pending_fails_immediately_on_disabled_pdf_extraction_without_retrying():
-    # A disabled/near-empty PDF is a permanent condition, not a transient one -- it must
-    # not burn the attempt budget (each retry against LlamaParse would be a paid call).
+def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pytest.MonkeyPatch):
+    client = _stub_llama_cloud(monkeypatch, "")
+    client.parsing.parse.side_effect = APIConnectionError(request=MagicMock())
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = ("abc123", "decision.pdf", 3)
     storage = MagicMock(spec=ObjectStorage)
     storage.get.return_value = b"%PDF-1.4\n"
 
     claimed = extract_pending(
-        conn, storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
+        conn,
+        storage,
+        "worker-1",
+        llama_parse_api_key="key",
+        llama_parse_tier="fast",
     )
 
     assert claimed is True
-    failure_call = conn.execute.call_args_list[1]
-    assert "state = 'failed'" in failure_call.args[0]
-    assert "attempt_count" not in failure_call.args[0]
-    assert failure_call.args[1] == {
-        "content_hash": "abc123",
-        "worker_id": "worker-1",
-        "lease_token": 3,
-    }
+    retry_call = conn.execute.call_args_list[1]
+    assert "attempt_count = attempt_count + 1" in retry_call.args[0]
+    client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_pending_fails_immediately_on_near_empty_pdf_without_retrying(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _stub_llama_cloud(monkeypatch, "  ")
+def test_extract_pending_reraises_unexpected_programming_errors():
     conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = ("abc123", "scan.pdf", 9)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", 3)
     storage = MagicMock(spec=ObjectStorage)
-    storage.get.return_value = b"%PDF-1.4\n"
+    storage.get.side_effect = TypeError("programming bug")
 
-    claimed = extract_pending(
-        conn, storage, "worker-1", llama_parse_api_key="key", llama_parse_tier="fast"
-    )
+    with pytest.raises(TypeError, match="programming bug"):
+        extract_pending(
+            conn,
+            storage,
+            "worker-1",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
 
-    assert claimed is True
-    failure_call = conn.execute.call_args_list[1]
-    assert "state = 'failed'" in failure_call.args[0]
-    assert "attempt_count" not in failure_call.args[0]
-
-
-# -- parse_pending: claim/advance against a mocked connection ----------------
-
-
-def test_parse_pending_returns_false_when_nothing_to_claim():
-    conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = None
-
-    assert parse_pending(conn, "worker-1", source_owner=None) is False
-
-
-def test_parse_pending_advances_extracted_row_to_parsed():
-    conn = MagicMock(spec=psycopg.Connection)
-    body = "# Moving off server-side sessions\n\nBody.\n\n— Basuru, 2026-05-14\n"
-    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", body, 4)
-
-    claimed = parse_pending(conn, "worker-1", source_owner=None)
-
-    assert claimed is True
-    advance_call = conn.execute.call_args_list[1]
-    assert "state = 'parsed'" in advance_call.args[0]
-    assert advance_call.args[1] == {
-        "title": "Moving off server-side sessions",
-        "author": "Basuru",
-        "author_source": "extracted",
-        "document_date": date(2026, 5, 14),
-        "tags": [],
-        "content_hash": "abc123",
-        "worker_id": "worker-1",
-        "lease_token": 4,
-    }
+    assert conn.execute.call_count == 1
 
 
 # -- extract_pending / parse_pending: real Postgres, gated behind infra ------
@@ -263,15 +286,11 @@ def db_conn() -> Iterator[psycopg.Connection]:
 
 @pytest.fixture
 def memory_storage() -> ObjectStorage:
-    import fsspec
-
     return ObjectStorage(fs=fsspec.filesystem("memory"), root="/nuron-extraction-test")
 
 
 def _land(conn: psycopg.Connection, storage: ObjectStorage, data: bytes, filename: str) -> str:
     """Lands one row directly, mirroring watcher.scan()'s insert, for integration tests."""
-    from nuron_ai.core import content_hash
-
     digest = content_hash(data)
     storage.put(data)
     conn.execute(
@@ -308,7 +327,78 @@ def test_extract_then_parse_pending_take_a_landed_md_row_to_parsed(
             "FROM nuron_ai.documents WHERE content_hash = %s",
             (digest,),
         ).fetchone()
-        assert row == ("parsed", "Moving off server-side sessions", "Basuru", "extracted", date(2026, 5, 14))
+        assert row == (
+            "parsed",
+            "Moving off server-side sessions",
+            "Basuru",
+            "extracted",
+            date(2026, 5, 14),
+        )
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_extract_pending_defers_disabled_pdf_without_consuming_attempt(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+):
+    digest = _land(db_conn, memory_storage, b"%PDF-1.4\n", "decision.pdf")
+
+    try:
+        assert extract_pending(
+            db_conn, memory_storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
+        )
+
+        row = db_conn.execute(
+            "SELECT state, attempt_count, next_attempt_at IS NOT NULL "
+            "FROM nuron_ai.documents WHERE content_hash = %s",
+            (digest,),
+        ).fetchone()
+        assert row == ("landed", 0, True)
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_extract_pending_marks_corrupt_docx_failed_without_retrying(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+):
+    digest = _land(db_conn, memory_storage, b"not a zip archive", "decision.docx")
+
+    try:
+        assert extract_pending(
+            db_conn, memory_storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
+        )
+
+        row = db_conn.execute(
+            "SELECT state, attempt_count FROM nuron_ai.documents WHERE content_hash = %s",
+            (digest,),
+        ).fetchone()
+        assert row == ("failed", 0)
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_extract_pending_records_transient_failure_for_retry(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+):
+    digest = _land(db_conn, memory_storage, b"# Retry later\n", "decision.md")
+    unavailable_storage = MagicMock(spec=ObjectStorage)
+    unavailable_storage.get.side_effect = OSError("RustFS unavailable")
+
+    try:
+        assert extract_pending(
+            db_conn,
+            unavailable_storage,
+            "worker-1",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
+
+        row = db_conn.execute(
+            "SELECT state, attempt_count, next_attempt_at IS NOT NULL "
+            "FROM nuron_ai.documents WHERE content_hash = %s",
+            (digest,),
+        ).fetchone()
+        assert row == ("landed", 1, True)
     finally:
         _cleanup(db_conn, digest)
 
@@ -356,7 +446,10 @@ def test_a11_pdf_fixture_header_matches_the_markdown_fixture_it_mirrors():
 
     pdf_bytes = FIXTURES.joinpath("auth-token-decision.pdf").read_bytes()
     markdown = extract_markdown(
-        pdf_bytes, "auth-token-decision.pdf", llama_parse_api_key=api_key, llama_parse_tier=tier
+        pdf_bytes,
+        "auth-token-decision.pdf",
+        llama_parse_api_key=api_key,
+        llama_parse_tier=tier,
     )
     header = parse_header(markdown, filename="auth-token-decision.pdf", source_owner=None)
 

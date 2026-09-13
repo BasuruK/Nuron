@@ -225,7 +225,7 @@ paused.
 | LLM | `OpenAILike` — configurable `base_url`, `api_key`, `model` | Not `OpenAI`; compatible endpoints need explicit `is_chat_model` / `is_function_calling_model` flags. **Startup check must verify structured output works** — `SchemaLLMPathExtractor` depends on it. Fail loudly at boot, not at 3am on malformed triples. |
 | Embeddings | `text-embedding-3-large`, `dimensions=1024` | Exactly §5.2's floor. **One-way door**: dimension is baked into the Neo4j vector index; changing it means re-embedding everything and rebuilding the index. Store the embedding model id **on each node** so a partial migration is detectable. Revisit only if accuracy drops. |
 | Object storage | RustFS, S3 API, via `fsspec`/`s3fs` | LlamaIndex already depends on `fsspec`, so the backend is a URI. Keeps MinIO/S3 as drop-in alternatives if RustFS's Beta bites. |
-| PDF extractor | LlamaParse via `llama-cloud`, `tier` + `expand=["markdown"]` (`markdown_full`) | **Off by default in shipped config.** Returns markdown, so PDFs converge on the same header parse as `.md`. `tier` is the per-page cost/quality knob (`LLAMA_PARSE_TIER` in `.env.example`); pricing watch in §7. |
+| PDF extractor | LlamaParse via `llama-cloud`, `tier` + `expand=["markdown_full"]` | **Off by default in shipped config.** Returns `markdown_full`, so PDFs converge on the same header parse as `.md`. `tier` is the per-page cost/quality knob (`LLAMA_PARSE_TIER` in `.env.example`); pricing watch in §7. |
 | Scan interval | 24 hours | Directory ingest only; uploads are immediate. |
 | mtime stability window | 30 seconds | **Decoupled from scan interval.** FR-1 ties them together; at a 24h interval that would mean ~48h worst case from drop to review queue. |
 | Parser rules | frontmatter `author:`/`title:`/`tags:`/`date:` → in-prose signature regex (`— Name, YYYY-MM-DD`) → filename date prefix | **Never file mtime** — that's the file's date, not the decision's. Everything unmatched is left blank for the reviewer. |
@@ -436,7 +436,7 @@ Marked here so they are deferred rather than forgotten.
    verify the headroom against current pricing rather than assuming a per-document rate.
    (NU-006: the `llama-parse`/`llama-cloud-services` packages this plan originally assumed
    (`result_type="markdown"`) are deprecated upstream in favor of the unified `llama-cloud>=1.0`
-   SDK; `parsing.parse(tier=..., expand=["markdown"])` replaces `result_type`, and `tier`
+   SDK; `parsing.parse(tier=..., expand=["markdown_full"])` returns `result.markdown_full`, and `tier`
    (`fast`/`cost_effective`/`agentic`/`agentic_plus`) is the per-page cost/quality knob.)
 3. **RustFS maturity watch.** Beta; its own README marks distributed mode, lifecycle management
    and KMS *"Under Testing."* Accepted knowingly. Because storage goes through `fsspec`, MinIO or

@@ -9,13 +9,15 @@ import logging
 import os
 import time
 import uuid
-import xml.etree.ElementTree as ET
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import psycopg
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
+from llama_cloud import APIConnectionError, InternalServerError, LlamaCloud, RateLimitError
 
 from nuron_ai import db
 from nuron_ai.core import object_key, parse_header
@@ -23,18 +25,21 @@ from nuron_ai.storage import ObjectStorage, from_env as storage_from_env
 
 logger = logging.getLogger(__name__)
 
-# ponytail: flat character-count floor, not per-page text density -- a genuinely short but
-# real PDF could trip this; revisit against a real corpus if that ever happens.
-_MIN_PDF_EXTRACTED_CHARS = 20
+_MAX_DOCX_XML_BYTES = 25 * 1024 * 1024
+_MAX_DOCX_COMPRESSION_RATIO = 100
 _LEASE_SECONDS = 300.0
+_PDF_PARSE_TIMEOUT_SECONDS = 240.0
 _MAX_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 60.0
 _POLL_DELAY_SECONDS = 5.0
 
 
+class ExtractionDeferred(RuntimeError):
+    """Raised when extraction is unavailable under the current configuration."""
+
+
 class PermanentExtractionError(RuntimeError):
-    """Raised when extraction can never succeed -- PDF parsing disabled, or a scanned,
-    image-only PDF with no text layer (no OCR in this pipeline)."""
+    """Raised when retrying the same immutable bytes can never succeed."""
 
 
 def extract_markdown(
@@ -44,53 +49,79 @@ def extract_markdown(
     llama_parse_api_key: str | None,
     llama_parse_tier: str | None,
 ) -> str:
-    """Converts one landed file's bytes to markdown -- the common form header parse expects."""
+    """Converts one landed file's bytes to Markdown for header parsing."""
     suffix = Path(filename).suffix.lower()
     if suffix in {".md", ".txt"}:
-        return data.decode("utf-8")
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise PermanentExtractionError(f"{suffix} content is not valid UTF-8") from err
+
     if suffix == ".docx":
-        return _extract_docx(data)
+        tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        try:
+            with zipfile.ZipFile(BytesIO(data)) as archive:
+                document_info = archive.getinfo("word/document.xml")
+                if document_info.file_size > _MAX_DOCX_XML_BYTES:
+                    raise PermanentExtractionError(
+                        f"word/document.xml exceeds {_MAX_DOCX_XML_BYTES} bytes"
+                    )
+                if (
+                    document_info.file_size
+                    > document_info.compress_size * _MAX_DOCX_COMPRESSION_RATIO
+                ):
+                    raise PermanentExtractionError(
+                        "word/document.xml exceeds the maximum compression ratio"
+                    )
+                with archive.open(document_info) as document:
+                    document_xml = document.read(_MAX_DOCX_XML_BYTES + 1)
+            if len(document_xml) > _MAX_DOCX_XML_BYTES:
+                raise PermanentExtractionError(
+                    f"word/document.xml exceeds {_MAX_DOCX_XML_BYTES} bytes"
+                )
+            root = ET.fromstring(document_xml, forbid_dtd=True)
+        except DefusedXmlException as err:
+            raise PermanentExtractionError(f"unsafe .docx XML: {err}") from err
+        except (KeyError, zipfile.BadZipFile, ET.ParseError) as err:
+            raise PermanentExtractionError(f"unreadable .docx: {err}") from err
+
+        paragraphs = []
+        for paragraph in root.iter(f"{tag}p"):
+            paragraph_text = "".join(node.text or "" for node in paragraph.iter(f"{tag}t"))
+            style = paragraph.find(f"{tag}pPr/{tag}pStyle")
+            if style is not None and style.get(f"{tag}val") == "Heading1":
+                paragraph_text = f"# {paragraph_text}"
+            paragraphs.append(paragraph_text)
+        return "\n\n".join(paragraphs)
+
     if suffix == ".pdf":
-        return _extract_pdf(data, filename, llama_parse_api_key, llama_parse_tier)
+        if not llama_parse_api_key or not llama_parse_tier:
+            raise ExtractionDeferred(
+                "PDF extraction is disabled -- set LLAMA_PARSE_ENABLED=true, "
+                "LLAMA_PARSE_API_KEY and LLAMA_PARSE_TIER"
+            )
+
+        client = LlamaCloud(api_key=llama_parse_api_key)
+        uploaded = client.files.create(file=(filename, data, "application/pdf"), purpose="parse")
+        try:
+            result = client.parsing.parse(
+                tier=llama_parse_tier,
+                version="latest",
+                file_id=uploaded.id,
+                expand=["markdown_full"],
+                timeout=_PDF_PARSE_TIMEOUT_SECONDS,
+            )
+            text = result.markdown_full or ""
+            if not text.strip():
+                raise PermanentExtractionError(
+                    "PDF extracted to near nothing -- likely a scanned image with no text layer "
+                    "(no OCR in this pipeline)"
+                )
+            return text
+        finally:
+            client.files.delete(file_id=uploaded.id)
+
     raise ValueError(f"unsupported extension for extraction: {suffix!r}")
-
-
-def _extract_docx(data: bytes) -> str:
-    """Extracts paragraph text from a .docx's word/document.xml -- stdlib, no deps."""
-    tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-    with zipfile.ZipFile(BytesIO(data)) as archive:
-        root = ET.fromstring(archive.read("word/document.xml"))
-    return "\n\n".join(
-        "".join(node.text or "" for node in paragraph.iter(f"{tag}t"))
-        for paragraph in root.iter(f"{tag}p")
-    )
-
-
-def _extract_pdf(
-    data: bytes, filename: str, api_key: str | None, tier: str | None
-) -> str:
-    """Extracts markdown from a .pdf via LlamaParse -- configurable, off by default (SS5.1)."""
-    if not api_key or not tier:
-        raise PermanentExtractionError(
-            "PDF extraction is disabled -- set LLAMA_PARSE_ENABLED=true, LLAMA_PARSE_API_KEY "
-            "and LLAMA_PARSE_TIER (dev/test only; verify current per-page credit pricing for "
-            "the chosen tier first -- docs/tracer-bullet-01.md §7)"
-        )
-
-    from llama_cloud import LlamaCloud
-
-    client = LlamaCloud(api_key=api_key)
-    uploaded = client.files.create(file=(filename, data, "application/pdf"), purpose="parse")
-    result = client.parsing.parse(
-        tier=tier, version="latest", file_id=uploaded.id, expand=["markdown"]
-    )
-    text = result.markdown_full or ""
-    if len(text.strip()) < _MIN_PDF_EXTRACTED_CHARS:
-        raise PermanentExtractionError(
-            "PDF extracted to near nothing -- likely a scanned image with no text layer "
-            "(no OCR in this pipeline)"
-        )
-    return text
 
 
 def _claim(
@@ -134,9 +165,7 @@ def _release(
     set_sql: str,
     params: dict[str, Any],
 ) -> None:
-    """Applies `set_sql` to the row we hold, then lets go of the lease -- the
-    claimed_by/lease_token guard means a stolen (lease-expired) row is never written
-    by the worker that lost it."""
+    """Updates and releases a row only while this worker still holds its lease."""
     conn.execute(
         f"""
         UPDATE nuron_ai.documents
@@ -161,12 +190,7 @@ def extract_pending(
     llama_parse_tier: str | None,
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
-    """Claims one `landed` row, extracts it to markdown, and advances it to `extracted`.
-
-    Extraction failures soft-fail through attempt_count/next_attempt_at (tracer-bullet-01.md
-    "Attempts") instead of raising -- the same loop a failed compile or persist will reuse.
-    Returns whether a row was claimed, so main()'s poll loop knows whether to keep going.
-    """
+    """Claims one landed row and advances, defers, retries, or fails extraction."""
     claimed = _claim(conn, worker_id, "landed", lease_seconds=lease_seconds)
     if claimed is None:
         return False
@@ -180,6 +204,17 @@ def extract_pending(
             llama_parse_api_key=llama_parse_api_key,
             llama_parse_tier=llama_parse_tier,
         )
+    except ExtractionDeferred as err:
+        logger.info("extraction deferred for %s (%s): %s", digest, original_filename, err)
+        _release(
+            conn,
+            digest,
+            worker_id,
+            lease_token,
+            "next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second'",
+            {"retry_delay_seconds": _RETRY_DELAY_SECONDS},
+        )
+        return True
     except PermanentExtractionError as err:
         # Permanent, not transient -- retrying can never succeed (a scanned PDF stays
         # scanned), and each retry against LlamaParse would be another paid call for
@@ -187,7 +222,7 @@ def extract_pending(
         logger.warning("extraction permanently failed for %s (%s): %s", digest, original_filename, err)
         _release(conn, digest, worker_id, lease_token, "state = 'failed'", {})
         return True
-    except Exception as err:
+    except (OSError, APIConnectionError, RateLimitError, InternalServerError) as err:
         logger.warning("extraction failed for %s (%s): %s", digest, original_filename, err)
         _release(
             conn,
@@ -222,11 +257,7 @@ def parse_pending(
     source_owner: str | None,
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
-    """Claims one `extracted` row and runs the deterministic header parse onto `parsed`.
-
-    No failure handling here: parse_header is a pure, total function over already-extracted
-    text -- it degrades to blank fields, it does not raise.
-    """
+    """Claims one extracted row and advances it through deterministic header parsing."""
     claimed = _claim(
         conn, worker_id, "extracted", extra_columns=", body", lease_seconds=lease_seconds
     )
