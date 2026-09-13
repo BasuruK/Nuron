@@ -156,7 +156,10 @@ def extract_markdown(
                 )
             return text
         finally:
-            client.files.delete(file_id=uploaded.id)
+            try:
+                client.files.delete(file_id=uploaded.id)
+            except Exception:  # cleanup must not mask the extraction outcome
+                logger.warning("could not delete LlamaCloud upload %s", uploaded.id)
 
     raise ValueError(f"unsupported extension for extraction: {suffix!r}")
 
@@ -295,7 +298,25 @@ def parse_pending(
         return False
 
     digest, original_filename, body, lease_token = claimed
-    header = parse_header(body, filename=original_filename, source_owner=source_owner)
+    try:
+        header = parse_header(body, filename=original_filename, source_owner=source_owner)
+    except Exception as err:
+        logger.warning("parse failed for %s (%s): %s", digest, original_filename, err)
+        _release(
+            conn,
+            digest,
+            worker_id,
+            lease_token,
+            """
+            attempt_count = attempt_count + 1,
+            next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
+            state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
+                         THEN 'failed'::nuron_ai.pipeline_state
+                         ELSE state END
+            """,
+            {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
+        )
+        return True
 
     _release(
         conn,
