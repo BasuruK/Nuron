@@ -234,7 +234,7 @@ def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pyte
     client = _stub_llama_cloud(monkeypatch, "")
     client.parsing.parse.side_effect = APIConnectionError(request=MagicMock())
     conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.pdf", 3)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.pdf", None, 3)
     storage = MagicMock(spec=ObjectStorage)
     storage.get.return_value = b"%PDF-1.4\n"
 
@@ -248,13 +248,13 @@ def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pyte
 
     assert claimed is True
     retry_call = conn.execute.call_args_list[1]
-    assert "attempt_count = attempt_count + 1" in retry_call.args[0]
+    assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
     client.files.delete.assert_called_once_with(file_id="file-123")
 
 
 def test_extract_pending_reraises_unexpected_programming_errors():
     conn = MagicMock(spec=psycopg.Connection)
-    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", 3)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", None, 3)
     storage = MagicMock(spec=ObjectStorage)
     storage.get.side_effect = TypeError("programming bug")
 

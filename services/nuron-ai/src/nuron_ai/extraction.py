@@ -10,6 +10,7 @@ import os
 import time
 import uuid
 import zipfile
+from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ import psycopg
 from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 from llama_cloud import APIConnectionError, InternalServerError, LlamaCloud, RateLimitError
+from psycopg import sql
 
 from nuron_ai import db
 from nuron_ai.core import object_key, parse_header
@@ -40,6 +42,41 @@ class ExtractionDeferred(RuntimeError):
 
 class PermanentExtractionError(RuntimeError):
     """Raised when retrying the same immutable bytes can never succeed."""
+
+
+class _ReleaseOperation(Enum):
+    DEFER = "defer"
+    FAIL = "fail"
+    RETRY = "retry"
+    EXTRACTED = "extracted"
+    PARSED = "parsed"
+
+
+_RELEASE_SET_SQL = {
+    _ReleaseOperation.DEFER: sql.SQL(
+        "next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second'"
+    ),
+    _ReleaseOperation.FAIL: sql.SQL("state = 'failed'"),
+    _ReleaseOperation.RETRY: sql.SQL(
+        """
+        attempt_count = attempt_count + 1,
+        next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
+        state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
+                     THEN 'failed'::nuron_ai.pipeline_state
+                     ELSE state END
+        """
+    ),
+    _ReleaseOperation.EXTRACTED: sql.SQL(
+        "state = 'extracted', body = %(body)s, attempt_count = 0, next_attempt_at = NULL"
+    ),
+    _ReleaseOperation.PARSED: sql.SQL(
+        """
+        state = 'parsed', title = %(title)s, author = %(author)s,
+        author_source = %(author_source)s, document_date = %(document_date)s, tags = %(tags)s,
+        attempt_count = 0, next_attempt_at = NULL
+        """
+    ),
+}
 
 
 def extract_markdown(
@@ -129,12 +166,11 @@ def _claim(
     worker_id: str,
     state: str,
     *,
-    extra_columns: str = "",
     lease_seconds: float = _LEASE_SECONDS,
 ) -> tuple[Any, ...] | None:
     """Claims one claimable row in `state`, bumping the lease -- None when nothing to take."""
     claimed = conn.execute(
-        f"""
+        """
         UPDATE nuron_ai.documents
         SET claimed_by = %(worker_id)s,
             lease_until = now() + %(lease_seconds)s * interval '1 second',
@@ -149,7 +185,7 @@ def _claim(
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
-        RETURNING content_hash, original_filename{extra_columns}, lease_token
+        RETURNING content_hash, original_filename, body, lease_token
         """,
         {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
     ).fetchone()
@@ -162,20 +198,22 @@ def _release(
     digest: str,
     worker_id: str,
     lease_token: int,
-    set_sql: str,
+    operation: _ReleaseOperation,
     params: dict[str, Any],
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
     conn.execute(
-        f"""
+        sql.SQL(
+            """
         UPDATE nuron_ai.documents
-        SET {set_sql},
+        SET {},
             claimed_by = NULL,
             lease_until = NULL
         WHERE content_hash = %(content_hash)s
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
-        """,
+        """
+        ).format(_RELEASE_SET_SQL[operation]),
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
     conn.commit()
@@ -195,7 +233,7 @@ def extract_pending(
     if claimed is None:
         return False
 
-    digest, original_filename, lease_token = claimed
+    digest, original_filename, _, lease_token = claimed
     try:
         data = storage.get(object_key(digest))
         markdown = extract_markdown(
@@ -211,7 +249,7 @@ def extract_pending(
             digest,
             worker_id,
             lease_token,
-            "next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second'",
+            _ReleaseOperation.DEFER,
             {"retry_delay_seconds": _RETRY_DELAY_SECONDS},
         )
         return True
@@ -220,7 +258,7 @@ def extract_pending(
         # scanned), and each retry against LlamaParse would be another paid call for
         # nothing. Fail straight away instead of burning the attempt budget on it.
         logger.warning("extraction permanently failed for %s (%s): %s", digest, original_filename, err)
-        _release(conn, digest, worker_id, lease_token, "state = 'failed'", {})
+        _release(conn, digest, worker_id, lease_token, _ReleaseOperation.FAIL, {})
         return True
     except (OSError, APIConnectionError, RateLimitError, InternalServerError) as err:
         logger.warning("extraction failed for %s (%s): %s", digest, original_filename, err)
@@ -229,13 +267,7 @@ def extract_pending(
             digest,
             worker_id,
             lease_token,
-            """
-            attempt_count = attempt_count + 1,
-            next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
-            state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
-                         THEN 'failed'::nuron_ai.pipeline_state
-                         ELSE state END
-            """,
+            _ReleaseOperation.RETRY,
             {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
         )
         return True
@@ -245,7 +277,7 @@ def extract_pending(
         digest,
         worker_id,
         lease_token,
-        "state = 'extracted', body = %(body)s, attempt_count = 0, next_attempt_at = NULL",
+        _ReleaseOperation.EXTRACTED,
         {"body": markdown},
     )
     return True
@@ -258,9 +290,7 @@ def parse_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one extracted row and advances it through deterministic header parsing."""
-    claimed = _claim(
-        conn, worker_id, "extracted", extra_columns=", body", lease_seconds=lease_seconds
-    )
+    claimed = _claim(conn, worker_id, "extracted", lease_seconds=lease_seconds)
     if claimed is None:
         return False
 
@@ -272,11 +302,7 @@ def parse_pending(
         digest,
         worker_id,
         lease_token,
-        """
-        state = 'parsed', title = %(title)s, author = %(author)s,
-        author_source = %(author_source)s, document_date = %(document_date)s, tags = %(tags)s,
-        attempt_count = 0, next_attempt_at = NULL
-        """,
+        _ReleaseOperation.PARSED,
         {
             "title": header.subject,
             "author": header.author,
