@@ -28,24 +28,24 @@ FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "watched"
 # -- extract_markdown: passthrough / unsupported ------------------------------
 
 
-def test_extract_markdown_passes_through_md():
+def test_extract_markdown_passes_through_md() -> None:
     data = "# Subject\n\nBody.\n".encode()
     text = extract_markdown(data, "note.md", llama_parse_api_key=None, llama_parse_tier=None)
     assert text == "# Subject\n\nBody.\n"
 
 
-def test_extract_markdown_passes_through_txt():
+def test_extract_markdown_passes_through_txt() -> None:
     data = "Plain notes.\n".encode()
     text = extract_markdown(data, "note.txt", llama_parse_api_key=None, llama_parse_tier=None)
     assert text == "Plain notes.\n"
 
 
-def test_extract_markdown_rejects_non_utf8_text_permanently():
+def test_extract_markdown_rejects_non_utf8_text_permanently() -> None:
     with pytest.raises(PermanentExtractionError, match="not valid UTF-8"):
         extract_markdown(b"\xff", "note.txt", llama_parse_api_key=None, llama_parse_tier=None)
 
 
-def test_extract_markdown_rejects_unsupported_extension():
+def test_extract_markdown_rejects_unsupported_extension() -> None:
     with pytest.raises(ValueError, match="unsupported extension"):
         extract_markdown(b"{}", "note.json", llama_parse_api_key=None, llama_parse_tier=None)
 
@@ -70,7 +70,7 @@ def _docx_bytes(paragraph_text: str, style: str | None = None) -> bytes:
     return buffer.getvalue()
 
 
-def test_extract_markdown_docx_extracts_paragraph_text():
+def test_extract_markdown_docx_extracts_paragraph_text() -> None:
     data = _docx_bytes("Dropping the session store for stateless JWT.")
 
     text = extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
@@ -78,7 +78,7 @@ def test_extract_markdown_docx_extracts_paragraph_text():
     assert text.strip() == "Dropping the session store for stateless JWT."
 
 
-def test_extract_markdown_docx_heading_one_becomes_document_title():
+def test_extract_markdown_docx_heading_one_becomes_document_title() -> None:
     data = _docx_bytes("Dropping the session store", style="Heading1")
 
     text = extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
@@ -87,7 +87,7 @@ def test_extract_markdown_docx_heading_one_becomes_document_title():
     assert header.subject == "Dropping the session store"
 
 
-def test_extract_markdown_docx_heading_two_stays_plain():
+def test_extract_markdown_docx_heading_two_stays_plain() -> None:
     data = _docx_bytes("Section", style="Heading2")
 
     text = extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
@@ -95,7 +95,7 @@ def test_extract_markdown_docx_heading_two_stays_plain():
     assert text.strip() == "Section"
 
 
-def test_extract_markdown_docx_rejects_oversized_document_xml():
+def test_extract_markdown_docx_rejects_oversized_document_xml() -> None:
     max_accepted_bytes = 25 * 1024 * 1024
     data = _docx_bytes("x" * max_accepted_bytes)
 
@@ -103,14 +103,14 @@ def test_extract_markdown_docx_rejects_oversized_document_xml():
         extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
 
 
-def test_extract_markdown_docx_rejects_excessive_compression_ratio():
+def test_extract_markdown_docx_rejects_excessive_compression_ratio() -> None:
     data = _docx_bytes("x" * 200_000)
 
     with pytest.raises(PermanentExtractionError, match="compression ratio"):
         extract_markdown(data, "decision.docx", llama_parse_api_key=None, llama_parse_tier=None)
 
 
-def test_extract_markdown_docx_rejects_dtd():
+def test_extract_markdown_docx_rejects_dtd() -> None:
     document_xml = (
         '<?xml version="1.0"?>'
         '<!DOCTYPE w:document [<!ENTITY payload "hostile">]>'
@@ -131,7 +131,7 @@ def test_extract_markdown_docx_rejects_dtd():
         )
 
 
-def test_extract_markdown_docx_rejects_corrupt_archive_permanently():
+def test_extract_markdown_docx_rejects_corrupt_archive_permanently() -> None:
     with pytest.raises(PermanentExtractionError, match="unreadable .docx"):
         extract_markdown(
             b"not a zip archive",
@@ -153,7 +153,7 @@ def _stub_llama_cloud(monkeypatch: pytest.MonkeyPatch, markdown_text: str) -> Ma
     return client
 
 
-def test_extract_markdown_pdf_deferred_without_api_key():
+def test_extract_markdown_pdf_deferred_without_api_key() -> None:
     with pytest.raises(ExtractionDeferred, match="PDF extraction is disabled"):
         extract_markdown(
             b"%PDF-1.4\n",
@@ -163,7 +163,7 @@ def test_extract_markdown_pdf_deferred_without_api_key():
         )
 
 
-def test_extract_markdown_pdf_deferred_without_tier():
+def test_extract_markdown_pdf_deferred_without_tier() -> None:
     with pytest.raises(ExtractionDeferred, match="PDF extraction is disabled"):
         extract_markdown(
             b"%PDF-1.4\n",
@@ -173,7 +173,7 @@ def test_extract_markdown_pdf_deferred_without_tier():
         )
 
 
-def test_extract_markdown_pdf_calls_llama_parse_when_enabled(monkeypatch: pytest.MonkeyPatch):
+def test_extract_markdown_pdf_calls_llama_parse_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _stub_llama_cloud(
         monkeypatch, "# Decision\n\nDropping sessions for JWT, plenty of text."
     )
@@ -193,7 +193,7 @@ def test_extract_markdown_pdf_calls_llama_parse_when_enabled(monkeypatch: pytest
     client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_markdown_pdf_accepts_short_nonempty_result(monkeypatch: pytest.MonkeyPatch):
+def test_extract_markdown_pdf_accepts_short_nonempty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_llama_cloud(monkeypatch, "Approved.")
 
     text = extract_markdown(
@@ -203,7 +203,7 @@ def test_extract_markdown_pdf_accepts_short_nonempty_result(monkeypatch: pytest.
     assert text == "Approved."
 
 
-def test_extract_markdown_pdf_near_empty_result_fails_loudly(monkeypatch: pytest.MonkeyPatch):
+def test_extract_markdown_pdf_near_empty_result_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _stub_llama_cloud(monkeypatch, "   \n  ")
 
     with pytest.raises(PermanentExtractionError, match="near nothing"):
@@ -216,7 +216,7 @@ def test_extract_markdown_pdf_near_empty_result_fails_loudly(monkeypatch: pytest
     client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_markdown_pdf_deletes_upload_when_parsing_fails(monkeypatch: pytest.MonkeyPatch):
+def test_extract_markdown_pdf_deletes_upload_when_parsing_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _stub_llama_cloud(monkeypatch, "")
     client.parsing.parse.side_effect = RuntimeError("parser bug")
 
@@ -230,7 +230,7 @@ def test_extract_markdown_pdf_deletes_upload_when_parsing_fails(monkeypatch: pyt
     client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pytest.MonkeyPatch):
+def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _stub_llama_cloud(monkeypatch, "")
     client.parsing.parse.side_effect = APIConnectionError(request=MagicMock())
     conn = MagicMock(spec=psycopg.Connection)
@@ -252,7 +252,7 @@ def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pyte
     client.files.delete.assert_called_once_with(file_id="file-123")
 
 
-def test_extract_pending_reraises_unexpected_programming_errors():
+def test_extract_pending_reraises_unexpected_programming_errors() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", None, 3)
     storage = MagicMock(spec=ObjectStorage)
@@ -267,7 +267,27 @@ def test_extract_pending_reraises_unexpected_programming_errors():
             llama_parse_tier=None,
         )
 
-    assert conn.execute.call_count == 1
+    assert conn.execute.call_count == 2
+    retry_call = conn.execute.call_args_list[1]
+    assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
+
+
+def test_parse_pending_retries_unexpected_parse_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.md", "# Decision", 3)
+    monkeypatch.setattr(
+        "nuron_ai.extraction.parse_header",
+        MagicMock(side_effect=ValueError("malformed header")),
+    )
+
+    claimed = parse_pending(conn, "worker-1", source_owner=None)
+
+    assert claimed is True
+    assert conn.execute.call_count == 2
+    retry_call = conn.execute.call_args_list[1]
+    assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
 
 
 # -- extract_pending / parse_pending: real Postgres, gated behind infra ------
@@ -312,7 +332,7 @@ def _cleanup(conn: psycopg.Connection, digest: str) -> None:
 
 def test_extract_then_parse_pending_take_a_landed_md_row_to_parsed(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
-):
+) -> None:
     data = b"# Moving off server-side sessions\n\nBody.\n\n\xe2\x80\x94 Basuru, 2026-05-14\n"
     digest = _land(db_conn, memory_storage, data, "decision.md")
 
@@ -340,7 +360,7 @@ def test_extract_then_parse_pending_take_a_landed_md_row_to_parsed(
 
 def test_extract_pending_defers_disabled_pdf_without_consuming_attempt(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
-):
+) -> None:
     digest = _land(db_conn, memory_storage, b"%PDF-1.4\n", "decision.pdf")
 
     try:
@@ -360,7 +380,7 @@ def test_extract_pending_defers_disabled_pdf_without_consuming_attempt(
 
 def test_extract_pending_marks_corrupt_docx_failed_without_retrying(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
-):
+) -> None:
     digest = _land(db_conn, memory_storage, b"not a zip archive", "decision.docx")
 
     try:
@@ -379,7 +399,7 @@ def test_extract_pending_marks_corrupt_docx_failed_without_retrying(
 
 def test_extract_pending_records_transient_failure_for_retry(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
-):
+) -> None:
     digest = _land(db_conn, memory_storage, b"# Retry later\n", "decision.md")
     unavailable_storage = MagicMock(spec=ObjectStorage)
     unavailable_storage.get.side_effect = OSError("RustFS unavailable")
@@ -405,7 +425,7 @@ def test_extract_pending_records_transient_failure_for_retry(
 
 def test_extract_pending_leaves_a_claimed_row_for_another_worker_alone(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
-):
+) -> None:
     data = b"# Held by another worker\n"
     digest = _land(db_conn, memory_storage, data, "held.md")
 
@@ -436,7 +456,7 @@ def test_extract_pending_leaves_a_claimed_row_for_another_worker_alone(
 # spends real per-page credits (docs/tracer-bullet-01.md §7).
 
 
-def test_a11_pdf_fixture_header_matches_the_markdown_fixture_it_mirrors():
+def test_a11_pdf_fixture_header_matches_the_markdown_fixture_it_mirrors() -> None:
     if os.environ.get("LLAMA_PARSE_ENABLED", "false").lower() != "true":
         pytest.skip("LLAMA_PARSE_ENABLED not set -- skipping the real LlamaParse call (A11)")
     api_key = os.environ.get("LLAMA_PARSE_API_KEY")

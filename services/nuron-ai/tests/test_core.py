@@ -70,7 +70,7 @@ def test_parse_header_unquotes_frontmatter_title_and_tags():
     assert header.tags == ["foo", "bar"]
 
 
-def test_parse_header_malformed_tags_quoting_leaves_tags_blank_instead_of_raising():
+def test_parse_header_malformed_tags_quoting_leaves_tags_blank_instead_of_raising() -> None:
     # An unterminated quote used to crash shlex with ValueError: No closing quotation --
     # a document a reviewer hasn't touched yet must never crash the automated parse step.
     text = '---\ntags: [foo, "bar]\n---\n# Notes\n'
