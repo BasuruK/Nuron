@@ -307,13 +307,7 @@ def parse_pending(
             digest,
             worker_id,
             lease_token,
-            """
-            attempt_count = attempt_count + 1,
-            next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
-            state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
-                         THEN 'failed'::nuron_ai.pipeline_state
-                         ELSE state END
-            """,
+            _ReleaseOperation.RETRY,
             {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
         )
         return True
