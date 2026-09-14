@@ -46,7 +46,7 @@ def test_extract_markdown_rejects_non_utf8_text_permanently() -> None:
 
 
 def test_extract_markdown_rejects_unsupported_extension() -> None:
-    with pytest.raises(ValueError, match="unsupported extension"):
+    with pytest.raises(PermanentExtractionError, match="unsupported extension"):
         extract_markdown(b"{}", "note.json", llama_parse_api_key=None, llama_parse_tier=None)
 
 
@@ -270,6 +270,27 @@ def test_extract_pending_reraises_unexpected_programming_errors() -> None:
     assert conn.execute.call_count == 2
     retry_call = conn.execute.call_args_list[1]
     assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
+
+
+def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "note.json", None, 3)
+    storage = MagicMock(spec=ObjectStorage)
+    storage.get.return_value = b"{}"
+
+    claimed = extract_pending(
+        conn,
+        storage,
+        "worker-1",
+        llama_parse_api_key=None,
+        llama_parse_tier=None,
+    )
+
+    assert claimed is True
+    assert conn.execute.call_count == 2
+    fail_call = conn.execute.call_args_list[1]
+    assert "state = 'failed'" in str(fail_call.args[0])
+    assert "attempt_count = attempt_count + 1" not in str(fail_call.args[0])
 
 
 def test_parse_pending_retries_unexpected_parse_errors(

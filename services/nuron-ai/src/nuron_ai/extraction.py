@@ -163,7 +163,7 @@ def extract_markdown(
             except Exception:  # cleanup must not mask the extraction outcome
                 logger.warning("could not delete LlamaCloud upload %s", uploaded.id)
 
-    raise ValueError(f"unsupported extension for extraction: {suffix!r}")
+    raise PermanentExtractionError(f"unsupported extension for extraction: {suffix!r}")
 
 
 def _claim(
@@ -207,6 +207,7 @@ def _release(
     params: dict[str, Any],
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
+    # The operation enum selects static fragments; document data only enters bound params.
     conn.execute(
         sql.SQL(
             """
@@ -218,7 +219,7 @@ def _release(
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
         """
-        ).format(_RELEASE_SET_SQL[operation]),
+        ).format(_RELEASE_SET_SQL[operation]),  # nosemgrep
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
     conn.commit()
