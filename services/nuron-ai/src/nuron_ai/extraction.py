@@ -44,6 +44,14 @@ class PermanentExtractionError(RuntimeError):
     """Raised when retrying the same immutable bytes can never succeed."""
 
 
+def _validate_docx_xml_size(size: int) -> None:
+    """Rejects DOCX document XML above the decompression limit."""
+    if size > _MAX_DOCX_XML_BYTES:
+        raise PermanentExtractionError(
+            f"word/document.xml exceeds {_MAX_DOCX_XML_BYTES} bytes"
+        )
+
+
 class _ReleaseOperation(Enum):
     DEFER = "defer"
     FAIL = "fail"
@@ -99,10 +107,7 @@ def extract_markdown(
         try:
             with zipfile.ZipFile(BytesIO(data)) as archive:
                 document_info = archive.getinfo("word/document.xml")
-                if document_info.file_size > _MAX_DOCX_XML_BYTES:
-                    raise PermanentExtractionError(
-                        f"word/document.xml exceeds {_MAX_DOCX_XML_BYTES} bytes"
-                    )
+                _validate_docx_xml_size(document_info.file_size)
                 if (
                     document_info.file_size
                     > document_info.compress_size * _MAX_DOCX_COMPRESSION_RATIO
@@ -112,10 +117,7 @@ def extract_markdown(
                     )
                 with archive.open(document_info) as document:
                     document_xml = document.read(_MAX_DOCX_XML_BYTES + 1)
-            if len(document_xml) > _MAX_DOCX_XML_BYTES:
-                raise PermanentExtractionError(
-                    f"word/document.xml exceeds {_MAX_DOCX_XML_BYTES} bytes"
-                )
+            _validate_docx_xml_size(len(document_xml))
             root = ET.fromstring(document_xml, forbid_dtd=True)
         except DefusedXmlException as err:
             raise PermanentExtractionError(f"unsafe .docx XML: {err}") from err
@@ -274,6 +276,16 @@ def extract_pending(
             {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
         )
         return True
+    except Exception:
+        _release(
+            conn,
+            digest,
+            worker_id,
+            lease_token,
+            _ReleaseOperation.RETRY,
+            {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
+        )
+        raise
 
     _release(
         conn,
