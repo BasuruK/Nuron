@@ -15,6 +15,7 @@ from llama_cloud import APIConnectionError
 from nuron_ai import db
 from nuron_ai.core import content_hash, parse_header
 from nuron_ai.extraction import (
+    _MAX_ATTEMPTS,
     ExtractionDeferred,
     PermanentExtractionError,
     extract_markdown,
@@ -293,6 +294,26 @@ def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -
     assert "attempt_count = attempt_count + 1" not in str(fail_call.args[0])
 
 
+def test_extract_pending_caps_disabled_pdf_deferrals() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = ("abc123", "decision.pdf", None, 3)
+    storage = MagicMock(spec=ObjectStorage)
+    storage.get.return_value = b"%PDF-1.4\n"
+
+    claimed = extract_pending(
+        conn,
+        storage,
+        "worker-1",
+        llama_parse_api_key=None,
+        llama_parse_tier=None,
+    )
+
+    assert claimed is True
+    defer_call = conn.execute.call_args_list[1]
+    assert "attempt_count = attempt_count + 1" in str(defer_call.args[0])
+    assert defer_call.args[1]["max_attempts"] == _MAX_ATTEMPTS
+
+
 def test_parse_pending_retries_unexpected_parse_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -379,22 +400,34 @@ def test_extract_then_parse_pending_take_a_landed_md_row_to_parsed(
         _cleanup(db_conn, digest)
 
 
-def test_extract_pending_defers_disabled_pdf_without_consuming_attempt(
+def test_extract_pending_fails_disabled_pdf_after_max_deferrals(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
 ) -> None:
     digest = _land(db_conn, memory_storage, b"%PDF-1.4\n", "decision.pdf")
 
     try:
-        assert extract_pending(
-            db_conn, memory_storage, "worker-1", llama_parse_api_key=None, llama_parse_tier=None
-        )
+        for attempt in range(_MAX_ATTEMPTS):
+            assert extract_pending(
+                db_conn,
+                memory_storage,
+                "worker-1",
+                llama_parse_api_key=None,
+                llama_parse_tier=None,
+            )
+            if attempt < _MAX_ATTEMPTS - 1:
+                db_conn.execute(
+                    "UPDATE nuron_ai.documents SET next_attempt_at = now() "
+                    "WHERE content_hash = %s",
+                    (digest,),
+                )
+                db_conn.commit()
 
         row = db_conn.execute(
-            "SELECT state, attempt_count, next_attempt_at IS NOT NULL "
+            "SELECT state, attempt_count, claimed_by IS NOT NULL "
             "FROM nuron_ai.documents WHERE content_hash = %s",
             (digest,),
         ).fetchone()
-        assert row == ("landed", 0, True)
+        assert row == ("failed", _MAX_ATTEMPTS, False)
     finally:
         _cleanup(db_conn, digest)
 

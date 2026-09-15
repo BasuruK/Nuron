@@ -60,20 +60,20 @@ class _ReleaseOperation(Enum):
     PARSED = "parsed"
 
 
+_ATTEMPT_RELEASE_SQL = sql.SQL(
+    """
+    attempt_count = attempt_count + 1,
+    next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
+    state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
+                 THEN 'failed'::nuron_ai.pipeline_state
+                 ELSE state END
+    """
+)
+
 _RELEASE_SET_SQL = {
-    _ReleaseOperation.DEFER: sql.SQL(
-        "next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second'"
-    ),
+    _ReleaseOperation.DEFER: _ATTEMPT_RELEASE_SQL,
     _ReleaseOperation.FAIL: sql.SQL("state = 'failed'"),
-    _ReleaseOperation.RETRY: sql.SQL(
-        """
-        attempt_count = attempt_count + 1,
-        next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
-        state = CASE WHEN attempt_count + 1 >= %(max_attempts)s
-                     THEN 'failed'::nuron_ai.pipeline_state
-                     ELSE state END
-        """
-    ),
+    _ReleaseOperation.RETRY: _ATTEMPT_RELEASE_SQL,
     _ReleaseOperation.EXTRACTED: sql.SQL(
         "state = 'extracted', body = %(body)s, attempt_count = 0, next_attempt_at = NULL"
     ),
@@ -256,7 +256,7 @@ def extract_pending(
             worker_id,
             lease_token,
             _ReleaseOperation.DEFER,
-            {"retry_delay_seconds": _RETRY_DELAY_SECONDS},
+            {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
         )
         return True
     except PermanentExtractionError as err:
