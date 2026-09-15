@@ -208,7 +208,7 @@ def _release(
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
     # The operation enum selects static fragments; document data only enters bound params.
-    conn.execute(
+    conn.execute(  # nosemgrep
         sql.SQL(
             """
         UPDATE nuron_ai.documents
@@ -219,7 +219,7 @@ def _release(
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
         """
-        ).format(_RELEASE_SET_SQL[operation]),  # nosemgrep
+        ).format(_RELEASE_SET_SQL[operation]),
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
     conn.commit()
