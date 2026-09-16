@@ -35,7 +35,9 @@ def claim(
     Shared by every pipeline stage (docs/tracer-bullet-01.md "Worker claim / lease"): the
     review queue reuses the exact same SKIP LOCKED contract as the automated workers.
     """
-    claimed = conn.execute(
+    # `returning` is always a hardcoded sql.SQL literal from a trusted call site (never
+    # user input) -- same shape as extraction.py's _release, just for a dynamic RETURNING list.
+    claimed = conn.execute(  # nosec B608
         sql.SQL(
             """
             UPDATE nuron_ai.documents
