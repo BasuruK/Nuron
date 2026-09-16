@@ -1,0 +1,9 @@
+---
+# Codacy-native exclusions -- more reliably respected than a tool's own config file
+# (e.g. bandit's [tool.bandit] in pyproject.toml) or inline suppression comments.
+# https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+exclude_paths:
+  # Bandit's B101 (assert_used) flags every assertion in this repo's pytest suites --
+  # bare `assert` is the pytest idiom the whole suite is written in (coding-standards.md
+  # "Testing"), not a real finding, and not a security-relevant surface.
+  - "services/nuron-ai/tests/**"
