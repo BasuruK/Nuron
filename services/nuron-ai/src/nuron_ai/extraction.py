@@ -35,6 +35,8 @@ _MAX_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 60.0
 _POLL_DELAY_SECONDS = 5.0
 
+_CLAIM_COLUMNS = sql.SQL("content_hash, original_filename, body, lease_token")
+
 
 class ExtractionDeferred(RuntimeError):
     """Raised when extraction is unavailable under the current configuration."""
@@ -166,38 +168,6 @@ def extract_markdown(
     raise PermanentExtractionError(f"unsupported extension for extraction: {suffix!r}")
 
 
-def _claim(
-    conn: psycopg.Connection,
-    worker_id: str,
-    state: str,
-    *,
-    lease_seconds: float = _LEASE_SECONDS,
-) -> tuple[Any, ...] | None:
-    """Claims one claimable row in `state`, bumping the lease -- None when nothing to take."""
-    claimed = conn.execute(
-        """
-        UPDATE nuron_ai.documents
-        SET claimed_by = %(worker_id)s,
-            lease_until = now() + %(lease_seconds)s * interval '1 second',
-            lease_token = lease_token + 1
-        WHERE content_hash = (
-            SELECT content_hash
-            FROM nuron_ai.documents
-            WHERE state = %(state)s::nuron_ai.pipeline_state
-              AND (lease_until IS NULL OR lease_until < now())
-              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-            ORDER BY created_at
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-        )
-        RETURNING content_hash, original_filename, body, lease_token
-        """,
-        {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
-    ).fetchone()
-    conn.commit()
-    return claimed
-
-
 def _release(
     conn: psycopg.Connection,
     digest: str,
@@ -235,7 +205,13 @@ def extract_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one landed row and advances, defers, retries, or fails extraction."""
-    claimed = _claim(conn, worker_id, "landed", lease_seconds=lease_seconds)
+    claimed = db.claim(
+        conn,
+        worker_id,
+        "landed",
+        _CLAIM_COLUMNS,
+        lease_seconds=lease_seconds,
+    )
     if claimed is None:
         return False
 
@@ -306,7 +282,13 @@ def parse_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one extracted row and advances it through deterministic header parsing."""
-    claimed = _claim(conn, worker_id, "extracted", lease_seconds=lease_seconds)
+    claimed = db.claim(
+        conn,
+        worker_id,
+        "extracted",
+        _CLAIM_COLUMNS,
+        lease_seconds=lease_seconds,
+    )
     if claimed is None:
         return False
 
