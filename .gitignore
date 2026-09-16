@@ -13,6 +13,8 @@ __pycache__/
 # Letta session memory files (contain local state and potentially sensitive info)
 .letta/
 
+# Ignore Command Code
+.commandcode/
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md

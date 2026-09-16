@@ -8,7 +8,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "defusedxml>=0.7.1",
     "fsspec>=2026.7.0",
+    "llama-cloud>=1.0",
     "psycopg[binary]>=3.3.5",
     "s3fs>=2026.7.0",
 ]
@@ -24,6 +26,6 @@ dev = [
 ]
 
 [[tool.mypy.overrides]]
-# fsspec ships no py.typed marker; nothing to check against.
-module = ["fsspec.*"]
+# These libraries ship no py.typed marker; nothing to check against.
+module = ["defusedxml.*", "fsspec.*"]
 ignore_missing_imports = true

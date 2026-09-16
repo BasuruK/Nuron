@@ -137,7 +137,12 @@ def _parse_frontmatter(match: re.Match[str] | None) -> dict[str, str | list[str]
             items.whitespace = ","
             items.whitespace_split = True
             items.commenters = ""
-            fields[key] = [item.strip() for item in items if item.strip()]
+            try:
+                fields[key] = [item.strip() for item in items if item.strip()]
+            except ValueError:
+                # Malformed quoting (e.g. an unterminated quote) -- this runs on
+                # unreviewed content, so it must degrade, never crash the parse.
+                pass
         elif value:
             fields[key] = _unquote(value)
     return fields
