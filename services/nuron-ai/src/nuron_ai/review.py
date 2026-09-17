@@ -81,14 +81,14 @@ def list_pending(conn: psycopg.Connection) -> list[PendingItem]:
     return [PendingItem(*row) for row in rows]
 
 
-def fetch_one(
-    conn: psycopg.Connection,
-    worker_id: str,
-    lease_seconds: float = _REVIEW_LEASE_SECONDS,
-) -> ReviewItem | None:
+def fetch_one(conn: psycopg.Connection, worker_id: str) -> ReviewItem | None:
     """Claims the oldest awaiting_review row for one reviewer's session; None if the queue is empty."""
     claimed = db.claim(
-        conn, worker_id, "awaiting_review", _REVIEW_ITEM_COLUMNS, lease_seconds=lease_seconds
+        conn,
+        worker_id,
+        "awaiting_review",
+        _REVIEW_ITEM_COLUMNS,
+        lease_seconds=_REVIEW_LEASE_SECONDS,
     )
     if claimed is None:
         return None
@@ -286,17 +286,17 @@ def reingest_diff(
     return ReingestDiff(prior_version=prior_version, prior_body=prior_body, raw_diff="".join(diff_lines))
 
 
-def promote_parsed(
-    conn: psycopg.Connection,
-    worker_id: str,
-    lease_seconds: float = _PROMOTION_LEASE_SECONDS,
-) -> bool:
+def promote_parsed(conn: psycopg.Connection, worker_id: str) -> bool:
     """Claims one parsed row and promotes it straight to awaiting_review."""
     # Nothing computed here -- parsing (NU-006) already finished. This flip is what makes the
     # row reachable to list_pending/fetch_one: tracer-bullet-01.md "Flow" has no human step
     # between parsed and awaiting_review.
     claimed = db.claim(
-        conn, worker_id, "parsed", sql.SQL("content_hash, lease_token"), lease_seconds=lease_seconds
+        conn,
+        worker_id,
+        "parsed",
+        sql.SQL("content_hash, lease_token"),
+        lease_seconds=_PROMOTION_LEASE_SECONDS,
     )
     if claimed is None:
         return False
