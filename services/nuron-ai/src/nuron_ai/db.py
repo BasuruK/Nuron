@@ -26,7 +26,6 @@ def claim(
     conn: psycopg.Connection,
     worker_id: str,
     state: str,
-    returning: sql.Composable,
     *,
     lease_seconds: float,
 ) -> tuple[Any, ...] | None:
@@ -35,11 +34,10 @@ def claim(
     Shared by every pipeline stage (docs/tracer-bullet-01.md "Worker claim / lease"): the
     review queue reuses the exact same SKIP LOCKED contract as the automated workers.
     """
-    # `returning` is always a hardcoded sql.SQL literal from a trusted call site (never user
-    # input) -- composed with `+` rather than .format() so a dynamic RETURNING list doesn't
-    # read as string-built SQL to static analysis (Bandit B608 flagged the .format() version
-    # even with # nosec; Codacy's hosted Bandit doesn't honor inline nosec suppressions).
-    query = (
+    # RETURNING is a fixed column list in this statement. Composing it from a caller
+    # fragment (`sql.SQL(...) + returning` or .format()) is what Opengrep/Bandit flag
+    # as SQL injection, even though the fragment was always a hardcoded literal.
+    claimed = conn.execute(
         sql.SQL(
             """
             UPDATE nuron_ai.documents
@@ -56,13 +54,11 @@ def claim(
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING
+            RETURNING content_hash, original_filename, title, author, author_source,
+                      document_date, tags, body, lease_token
             """
-        )
-        + returning
-    )
-    claimed = conn.execute(
-        query, {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state}
+        ),
+        {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
     ).fetchone()
     conn.commit()
     return claimed

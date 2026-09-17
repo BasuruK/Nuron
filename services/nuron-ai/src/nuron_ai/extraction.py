@@ -35,9 +35,6 @@ _MAX_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 60.0
 _POLL_DELAY_SECONDS = 5.0
 
-_CLAIM_COLUMNS = sql.SQL("content_hash, original_filename, body, lease_token")
-
-
 class ExtractionDeferred(RuntimeError):
     """Raised when extraction is unavailable under the current configuration."""
 
@@ -205,17 +202,11 @@ def extract_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one landed row and advances, defers, retries, or fails extraction."""
-    claimed = db.claim(
-        conn,
-        worker_id,
-        "landed",
-        _CLAIM_COLUMNS,
-        lease_seconds=lease_seconds,
-    )
+    claimed = db.claim(conn, worker_id, "landed", lease_seconds=lease_seconds)
     if claimed is None:
         return False
 
-    digest, original_filename, _, lease_token = claimed
+    digest, original_filename, _, _, _, _, _, _, lease_token = claimed
     try:
         data = storage.get(object_key(digest))
         markdown = extract_markdown(
@@ -282,17 +273,11 @@ def parse_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one extracted row and advances it through deterministic header parsing."""
-    claimed = db.claim(
-        conn,
-        worker_id,
-        "extracted",
-        _CLAIM_COLUMNS,
-        lease_seconds=lease_seconds,
-    )
+    claimed = db.claim(conn, worker_id, "extracted", lease_seconds=lease_seconds)
     if claimed is None:
         return False
 
-    digest, original_filename, body, lease_token = claimed
+    digest, original_filename, _, _, _, _, _, body, lease_token = claimed
     try:
         header = parse_header(body, filename=original_filename, source_owner=source_owner)
     except Exception as err:

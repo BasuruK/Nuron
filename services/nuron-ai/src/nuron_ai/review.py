@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 import psycopg
-from psycopg import sql
-
 from nuron_ai import db
 from nuron_ai.core import AuthorSource, object_key
 from nuron_ai.extraction import ExtractionDeferred, PermanentExtractionError, extract_markdown
@@ -26,12 +24,6 @@ _REVIEW_LEASE_SECONDS = 1800.0  # a human review session, not a worker poll -- e
 _PROMOTION_LEASE_SECONDS = 300.0  # automatic flip, no human wait -- matches extraction.py's worker lease.
 _POLL_DELAY_SECONDS = 5.0
 _RETRY_DELAY_SECONDS = 60.0
-
-_REVIEW_ITEM_COLUMNS = sql.SQL(
-    "content_hash, original_filename, title, author, author_source, "
-    "document_date, tags, body, lease_token"
-)
-
 
 @dataclass(frozen=True)
 class PendingItem:
@@ -84,11 +76,7 @@ def list_pending(conn: psycopg.Connection) -> list[PendingItem]:
 def fetch_one(conn: psycopg.Connection, worker_id: str) -> ReviewItem | None:
     """Claims the oldest awaiting_review row for one reviewer's session; None if the queue is empty."""
     claimed = db.claim(
-        conn,
-        worker_id,
-        "awaiting_review",
-        _REVIEW_ITEM_COLUMNS,
-        lease_seconds=_REVIEW_LEASE_SECONDS,
+        conn, worker_id, "awaiting_review", lease_seconds=_REVIEW_LEASE_SECONDS
     )
     if claimed is None:
         return None
@@ -291,16 +279,10 @@ def promote_parsed(conn: psycopg.Connection, worker_id: str) -> bool:
     # Nothing computed here -- parsing (NU-006) already finished. This flip is what makes the
     # row reachable to list_pending/fetch_one: tracer-bullet-01.md "Flow" has no human step
     # between parsed and awaiting_review.
-    claimed = db.claim(
-        conn,
-        worker_id,
-        "parsed",
-        sql.SQL("content_hash, lease_token"),
-        lease_seconds=_PROMOTION_LEASE_SECONDS,
-    )
+    claimed = db.claim(conn, worker_id, "parsed", lease_seconds=_PROMOTION_LEASE_SECONDS)
     if claimed is None:
         return False
-    claimed_content_hash, lease_token = claimed
+    claimed_content_hash, *_, lease_token = claimed
     cursor = conn.execute(
         """
         UPDATE nuron_ai.documents
