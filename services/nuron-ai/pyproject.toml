@@ -29,3 +29,9 @@ dev = [
 # These libraries ship no py.typed marker; nothing to check against.
 module = ["defusedxml.*", "fsspec.*"]
 ignore_missing_imports = true
+
+
+[tool.bandit]
+# assert is the pytest idiom this whole suite is written in (see coding-standards.md
+# "Testing"); B101 flagging it is a permanent false positive here, not a real finding.
+exclude_dirs = ["tests"]
