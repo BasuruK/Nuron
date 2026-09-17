@@ -1,14 +1,16 @@
 """Tests for review.py: review queue, edits, Reviewed Source versioning (NU-007)."""
 
 import os
+import uuid
 from collections.abc import Iterator
 from datetime import date
+from pathlib import Path
 
 import fsspec
 import psycopg
 import pytest
+from psycopg import sql
 
-from nuron_ai import db
 from nuron_ai.core import content_hash
 from nuron_ai.review import (
     approve,
@@ -21,11 +23,70 @@ from nuron_ai.review import (
 from nuron_ai.storage import ObjectStorage
 
 
-@pytest.fixture
-def db_conn() -> Iterator[psycopg.Connection]:
+_SCHEMA_SQL = Path(__file__).resolve().parents[3] / "schema" / "schema.sql"
+
+
+def _nuron_ai_ddl() -> str:
+    """Returns schema.sql's nuron_ai DDL, skipping cluster-wide CREATE ROLE."""
+    source = _SCHEMA_SQL.read_text()
+    start = source.index("SET ROLE nuron_ai_svc;") + len("SET ROLE nuron_ai_svc;")
+    end = source.index("\nRESET ROLE;")
+    return source[start:end]
+
+
+def _admin_connect(dbname: str) -> psycopg.Connection:
+    """Connects as the compose bootstrap superuser to create/drop isolated test DBs."""
+    return psycopg.connect(
+        host=os.environ["NURON_AI_DB_HOST"],
+        port=os.environ["NURON_AI_DB_PORT"],
+        dbname=dbname,
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        autocommit=True,
+        cursor_factory=psycopg.ClientCursor,
+    )
+
+
+@pytest.fixture(scope="module")
+def review_test_db() -> Iterator[str]:
+    """Creates a dedicated empty database with the nuron_ai schema; drops it after."""
     if not os.environ.get("POSTGRES_INTEGRATION_TESTS"):
-        pytest.skip("POSTGRES_INTEGRATION_TESTS not set -- skipping Postgres integration tests")
-    conn = db.from_env()
+        pytest.skip(
+            "POSTGRES_INTEGRATION_TESTS not set -- skipping Postgres integration tests"
+        )
+    dbname = f"nuron_review_test_{uuid.uuid4().hex}"
+    admin = _admin_connect(os.environ["POSTGRES_DB"])
+    try:
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
+        setup = _admin_connect(dbname)
+        try:
+            setup.execute("CREATE SCHEMA nuron_ai AUTHORIZATION nuron_ai_svc")
+            setup.execute("SET ROLE nuron_ai_svc")
+            setup.execute(_nuron_ai_ddl())
+        finally:
+            setup.close()
+        yield dbname
+    finally:
+        admin.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                sql.Identifier(dbname)
+            )
+        )
+        admin.close()
+
+
+@pytest.fixture
+def db_conn(review_test_db: str) -> Iterator[psycopg.Connection]:
+    """Connects to the dedicated review-test database with an empty claim queue."""
+    conn = psycopg.connect(
+        host=os.environ["NURON_AI_DB_HOST"],
+        port=os.environ["NURON_AI_DB_PORT"],
+        dbname=review_test_db,
+        user="nuron_ai_svc",
+        password=os.environ["NURON_AI_DB_PASSWORD"],
+    )
+    conn.execute("TRUNCATE TABLE nuron_ai.documents CASCADE")
+    conn.commit()
     try:
         yield conn
     finally:
@@ -94,11 +155,8 @@ def test_list_pending_lists_awaiting_review_rows_oldest_first(
     digest_a = _awaiting_review(db_conn, memory_storage, b"# A\n", "a.md")
     digest_b = _awaiting_review(db_conn, memory_storage, b"# B\n", "b.md")
     try:
-        ours = []
-        for item in list_pending(db_conn):
-            if item.content_hash in (digest_a, digest_b):
-                ours.append(item)
-        assert [item.content_hash for item in ours] == [digest_a, digest_b]
+        pending = list_pending(db_conn)
+        assert [item.content_hash for item in pending] == [digest_a, digest_b]
     finally:
         _cleanup(db_conn, digest_a, digest_b)
 
