@@ -452,7 +452,8 @@ def test_approve_fails_when_lease_expires_waiting_for_advisory_lock(
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             waiting = db_conn.execute(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND pid = %s",
+                (worker.info.backend_pid,),
             ).fetchone()
             if waiting == (1,):
                 break
