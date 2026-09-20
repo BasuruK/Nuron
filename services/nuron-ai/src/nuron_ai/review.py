@@ -24,6 +24,7 @@ _REVIEW_LEASE_SECONDS = 1800.0  # a human review session, not a worker poll -- e
 _PROMOTION_LEASE_SECONDS = 300.0  # automatic flip, no human wait -- matches extraction.py's worker lease.
 _POLL_DELAY_SECONDS = 5.0
 _RETRY_DELAY_SECONDS = 60.0
+_PENDING_PAGE_SIZE = 100
 
 @dataclass(frozen=True)
 class PendingItem:
@@ -59,15 +60,23 @@ class ReingestDiff:
     raw_diff: str
 
 
-def list_pending(conn: psycopg.Connection) -> list[PendingItem]:
-    """Lists every row awaiting review, oldest first -- the reviewer's queue view."""
+def list_pending(
+    conn: psycopg.Connection,
+    *,
+    limit: int = _PENDING_PAGE_SIZE,
+    offset: int = 0,
+) -> list[PendingItem]:
+    """Lists one page of awaiting_review rows, oldest first -- the reviewer's queue view."""
     rows = conn.execute(
         """
         SELECT content_hash, original_filename, title, created_at
         FROM nuron_ai.documents
         WHERE state = 'awaiting_review'
-        ORDER BY created_at
-        """
+        ORDER BY created_at, content_hash
+        LIMIT %(limit)s
+        OFFSET %(offset)s
+        """,
+        {"limit": limit, "offset": offset},
     ).fetchall()
     conn.commit()
     return [PendingItem(*row) for row in rows]
@@ -144,6 +153,7 @@ def approve(
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
           AND state = 'awaiting_review'
+          AND lease_until > clock_timestamp()
         FOR UPDATE
         """,
         {"content_hash": content_hash, "worker_id": worker_id, "lease_token": lease_token},
@@ -203,6 +213,7 @@ def approve(
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
           AND state = 'awaiting_review'
+          AND lease_until > clock_timestamp()
         RETURNING content_hash
         """,
         {"content_hash": content_hash, "worker_id": worker_id, "lease_token": lease_token},

@@ -1,6 +1,8 @@
 """Tests for review.py: review queue, edits, Reviewed Source versioning (NU-007)."""
 
 import os
+import threading
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import date
@@ -159,6 +161,22 @@ def test_list_pending_lists_awaiting_review_rows_oldest_first(
         assert [item.content_hash for item in pending] == [digest_a, digest_b]
     finally:
         _cleanup(db_conn, digest_a, digest_b)
+
+
+def test_list_pending_pages_with_limit_and_offset(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest_a = _awaiting_review(db_conn, memory_storage, b"# A\n", "a.md")
+    digest_b = _awaiting_review(db_conn, memory_storage, b"# B\n", "b.md")
+    digest_c = _awaiting_review(db_conn, memory_storage, b"# C\n", "c.md")
+    digest_d = _awaiting_review(db_conn, memory_storage, b"# D\n", "d.md")
+    try:
+        first_page = list_pending(db_conn, limit=2, offset=0)
+        second_page = list_pending(db_conn, limit=2, offset=2)
+        assert [item.content_hash for item in first_page] == [digest_a, digest_b]
+        assert [item.content_hash for item in second_page] == [digest_c, digest_d]
+    finally:
+        _cleanup(db_conn, digest_a, digest_b, digest_c, digest_d)
 
 
 def test_fetch_one_claims_oldest_awaiting_review_row_and_returns_full_header(
@@ -351,6 +369,117 @@ def test_approve_fails_when_lease_lost(
             == (0,)
         )
     finally:
+        _cleanup(db_conn, digest)
+
+
+def test_approve_fails_when_lease_expired(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest = _awaiting_review(db_conn, memory_storage, b"# Expired lease\n", "expired-lease.md")
+    try:
+        item = fetch_one(db_conn, "reviewer-1")
+        assert item is not None
+        db_conn.execute(
+            """
+            UPDATE nuron_ai.documents
+            SET lease_until = clock_timestamp() - interval '1 second'
+            WHERE content_hash = %s
+            """,
+            (digest,),
+        )
+        db_conn.commit()
+
+        assert approve(db_conn, digest, "reviewer-1", item.lease_token) is None
+
+        row = db_conn.execute(
+            "SELECT state FROM nuron_ai.documents WHERE content_hash = %s", (digest,)
+        ).fetchone()
+        assert row == ("awaiting_review",)
+        assert (
+            db_conn.execute(
+                "SELECT count(*) FROM nuron_ai.reviewed_sources WHERE content_hash = %s", (digest,)
+            ).fetchone()
+            == (0,)
+        )
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_approve_fails_when_lease_expires_waiting_for_advisory_lock(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection, review_test_db: str
+) -> None:
+    filename = "expired-during-lock.md"
+    digest = _awaiting_review(db_conn, memory_storage, b"# Expires mid-lock\n", filename)
+    blocker: psycopg.Connection | None = None
+    worker: psycopg.Connection | None = None
+    try:
+        item = fetch_one(db_conn, "reviewer-1")
+        assert item is not None
+        db_conn.execute(
+            """
+            UPDATE nuron_ai.documents
+            SET lease_until = clock_timestamp() + interval '2 seconds'
+            WHERE content_hash = %s
+            """,
+            (digest,),
+        )
+        db_conn.commit()
+
+        blocker = psycopg.connect(
+            host=os.environ["NURON_AI_DB_HOST"],
+            port=os.environ["NURON_AI_DB_PORT"],
+            dbname=review_test_db,
+            user="nuron_ai_svc",
+            password=os.environ["NURON_AI_DB_PASSWORD"],
+        )
+        blocker.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (filename,))
+
+        worker = psycopg.connect(
+            host=os.environ["NURON_AI_DB_HOST"],
+            port=os.environ["NURON_AI_DB_PORT"],
+            dbname=review_test_db,
+            user="nuron_ai_svc",
+            password=os.environ["NURON_AI_DB_PASSWORD"],
+        )
+        result: list[int | None] = []
+
+        def run_approve() -> None:
+            assert worker is not None
+            result.append(approve(worker, digest, "reviewer-1", item.lease_token))
+
+        thread = threading.Thread(target=run_approve)
+        thread.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            waiting = db_conn.execute(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            ).fetchone()
+            if waiting == (1,):
+                break
+            time.sleep(0.05)
+        else:
+            raise TimeoutError("approve never blocked on advisory lock")
+        time.sleep(2.5)
+        blocker.rollback()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert result == [None]
+
+        row = db_conn.execute(
+            "SELECT state FROM nuron_ai.documents WHERE content_hash = %s", (digest,)
+        ).fetchone()
+        assert row == ("awaiting_review",)
+        assert (
+            db_conn.execute(
+                "SELECT count(*) FROM nuron_ai.reviewed_sources WHERE content_hash = %s", (digest,)
+            ).fetchone()
+            == (0,)
+        )
+    finally:
+        if worker is not None:
+            worker.close()
+        if blocker is not None:
+            blocker.close()
         _cleanup(db_conn, digest)
 
 
