@@ -241,6 +241,7 @@ def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pyte
     client.parsing.parse.side_effect = APIConnectionError(request=MagicMock())
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("decision.pdf")
+    conn.execute.return_value.rowcount = 1
     storage = MagicMock(spec=ObjectStorage)
     storage.get.return_value = b"%PDF-1.4\n"
 
@@ -261,6 +262,7 @@ def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pyte
 def test_extract_pending_reraises_unexpected_programming_errors() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("decision.md")
+    conn.execute.return_value.rowcount = 1
     storage = MagicMock(spec=ObjectStorage)
     storage.get.side_effect = TypeError("programming bug")
 
@@ -278,9 +280,30 @@ def test_extract_pending_reraises_unexpected_programming_errors() -> None:
     assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
 
 
+def test_extract_pending_surfaces_lost_lease_during_release() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = _claimed_row("decision.md")
+    conn.execute.return_value.rowcount = 0
+    storage = MagicMock(spec=ObjectStorage)
+    storage.get.return_value = b"# Decision\n"
+
+    with pytest.raises(RuntimeError, match="lost lease"):
+        extract_pending(
+            conn,
+            storage,
+            "worker-1",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
+
+    conn.rollback.assert_called_once_with()
+    conn.commit.assert_called_once_with()
+
+
 def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("note.json")
+    conn.execute.return_value.rowcount = 1
     storage = MagicMock(spec=ObjectStorage)
     storage.get.return_value = b"{}"
 
@@ -302,6 +325,7 @@ def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -
 def test_extract_pending_caps_disabled_pdf_deferrals() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("decision.pdf")
+    conn.execute.return_value.rowcount = 1
     storage = MagicMock(spec=ObjectStorage)
     storage.get.return_value = b"%PDF-1.4\n"
 
@@ -324,6 +348,7 @@ def test_parse_pending_retries_unexpected_parse_errors(
 ) -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("decision.md", "# Decision")
+    conn.execute.return_value.rowcount = 1
     monkeypatch.setattr(
         "nuron_ai.extraction.parse_header",
         MagicMock(side_effect=ValueError("malformed header")),

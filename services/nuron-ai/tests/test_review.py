@@ -182,6 +182,23 @@ def test_list_pending_pages_with_limit_and_offset(
         _cleanup(db_conn, digest_a, digest_b, digest_c, digest_d)
 
 
+def test_list_pending_hides_rows_under_active_review_lease(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    claimed_digest = _awaiting_review(db_conn, memory_storage, b"# Claimed\n", "claimed.md")
+    available_digest = _awaiting_review(db_conn, memory_storage, b"# Available\n", "available.md")
+    try:
+        claimed = fetch_one(db_conn, "reviewer-1")
+        assert claimed is not None
+        assert claimed.content_hash == claimed_digest
+
+        pending = list_pending(db_conn)
+
+        assert [item.content_hash for item in pending] == [available_digest]
+    finally:
+        _cleanup(db_conn, claimed_digest, available_digest)
+
+
 def test_fetch_one_claims_oldest_awaiting_review_row_and_returns_full_header(
     memory_storage: ObjectStorage, db_conn: psycopg.Connection
 ) -> None:
@@ -293,6 +310,45 @@ def test_save_edit_fails_when_lease_token_is_stale(
         )
         assert not saved
 
+        row = db_conn.execute(
+            "SELECT body FROM nuron_ai.documents WHERE content_hash = %s", (digest,)
+        ).fetchone()
+        assert row == ("# Draft\n",)
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_save_edit_fails_when_lease_is_expired(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest = _awaiting_review(db_conn, memory_storage, b"# Draft\n", "expired-save.md")
+    try:
+        item = fetch_one(db_conn, "reviewer-1")
+        assert item is not None
+        db_conn.execute(
+            """
+            UPDATE nuron_ai.documents
+            SET lease_until = clock_timestamp() - interval '1 second'
+            WHERE content_hash = %s
+            """,
+            (digest,),
+        )
+        db_conn.commit()
+
+        saved = save_edit(
+            db_conn,
+            digest,
+            "reviewer-1",
+            item.lease_token,
+            title=None,
+            author=None,
+            author_source=None,
+            document_date=None,
+            tags=[],
+            body="should not apply",
+        )
+
+        assert not saved
         row = db_conn.execute(
             "SELECT body FROM nuron_ai.documents WHERE content_hash = %s", (digest,)
         ).fetchone()
@@ -485,6 +541,77 @@ def test_approve_fails_when_lease_expires_waiting_for_advisory_lock(
         if blocker is not None:
             blocker.close()
         _cleanup(db_conn, digest)
+
+
+def test_documents_reject_partial_lease_state(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest = _awaiting_review(db_conn, memory_storage, b"# Lease invariant\n", "lease.md")
+    try:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            db_conn.execute(
+                "UPDATE nuron_ai.documents SET claimed_by = 'worker-1' WHERE content_hash = %s",
+                (digest,),
+            )
+        db_conn.rollback()
+
+        row = db_conn.execute(
+            "SELECT claimed_by, lease_until FROM nuron_ai.documents WHERE content_hash = %s",
+            (digest,),
+        ).fetchone()
+        assert row == (None, None)
+    finally:
+        _cleanup(db_conn, digest)
+
+
+def test_node_provenance_rejects_reviewed_source_from_another_document(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest_a = _awaiting_review(db_conn, memory_storage, b"# A\n", "a.md")
+    digest_b = _awaiting_review(db_conn, memory_storage, b"# B\n", "b.md")
+    try:
+        item_a = fetch_one(db_conn, "reviewer-1")
+        assert item_a is not None
+        assert approve(db_conn, digest_a, "reviewer-1", item_a.lease_token) == 1
+        item_b = fetch_one(db_conn, "reviewer-1")
+        assert item_b is not None
+        assert approve(db_conn, digest_b, "reviewer-1", item_b.lease_token) == 1
+        source_b = db_conn.execute(
+            "SELECT id FROM nuron_ai.reviewed_sources WHERE content_hash = %s",
+            (digest_b,),
+        ).fetchone()
+        assert source_b is not None
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            db_conn.execute(
+                """
+                INSERT INTO nuron_ai.node_provenance
+                    (node_key, content_hash, reviewed_source_id)
+                VALUES ('node-a', %s, %s)
+                """,
+                (digest_a, source_b[0]),
+            )
+        db_conn.rollback()
+    finally:
+        _cleanup(db_conn, digest_a, digest_b)
+
+
+def test_deleting_document_cascades_to_reviewed_sources(
+    memory_storage: ObjectStorage, db_conn: psycopg.Connection
+) -> None:
+    digest = _awaiting_review(db_conn, memory_storage, b"# Delete\n", "delete.md")
+    item = fetch_one(db_conn, "reviewer-1")
+    assert item is not None
+    assert approve(db_conn, digest, "reviewer-1", item.lease_token) == 1
+
+    db_conn.execute("DELETE FROM nuron_ai.documents WHERE content_hash = %s", (digest,))
+    db_conn.commit()
+
+    count = db_conn.execute(
+        "SELECT count(*) FROM nuron_ai.reviewed_sources WHERE content_hash = %s",
+        (digest,),
+    ).fetchone()
+    assert count == (0,)
 
 
 def test_promote_parsed_moves_parsed_row_to_awaiting_review(

@@ -11,6 +11,7 @@ from nuron_ai.core import (
     merge_alias,
     natural_key,
     normalize,
+    object_key,
     parse_header,
     plan_delta,
     release_ref,
@@ -30,6 +31,15 @@ def test_content_hash_is_sha256_hex_digest():
 
 def test_content_hash_is_content_sensitive():
     assert content_hash(b"these bytes") != content_hash(b"other bytes")
+
+
+@pytest.mark.parametrize(
+    "digest",
+    ["", "a", "a" * 63, "a" * 65, "g" * 64, "A" * 64],
+)
+def test_object_key_rejects_malformed_digest(digest: str) -> None:
+    with pytest.raises(ValueError, match="lowercase sha256"):
+        object_key(digest)
 
 
 # -- parse_header ---------------------------------------------------------------
@@ -325,3 +335,8 @@ def test_release_ref_marks_node_for_deletion_when_last_ref_released():
 
     assert remaining == frozenset()
     assert delete_node is True
+
+
+def test_release_ref_rejects_ref_the_node_does_not_hold() -> None:
+    with pytest.raises(ValueError, match="not present"):
+        release_ref(frozenset(), "doc-a")

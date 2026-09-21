@@ -118,6 +118,16 @@ def test_get_raises_when_stored_bytes_are_corrupted(memory_storage: ObjectStorag
     assert memory_storage.get(key) == data
 
 
+def test_get_rejects_key_that_escapes_storage_root(memory_storage: ObjectStorage) -> None:
+    data = b"outside the object root"
+    digest = hashlib.sha256(data).hexdigest()
+    escaped_path = f"{memory_storage.root}/../secret/{digest}"
+    memory_storage.fs.pipe_file(escaped_path, data)
+
+    with pytest.raises(ValueError, match="invalid object key"):
+        memory_storage.get(f"../secret/{digest}")
+
+
 def test_put_retries_after_failed_write(
     memory_storage: ObjectStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
