@@ -4,8 +4,8 @@ Host is published on the compose stack only for local dev (see docker-compose.ym
 NU-005 note) -- nuron-ai isn't containerized yet.
 """
 
-import os
 import math
+import os
 from typing import Any
 
 import psycopg

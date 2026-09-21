@@ -3,9 +3,6 @@
 # Marker text lives only in schema.sql (COMMENT ON SCHEMA nuron_ai).
 set -eu
 
-: "${POSTGRES_USER:?POSTGRES_USER is required for postgres healthcheck}"
-: "${POSTGRES_DB:?POSTGRES_DB is required for postgres healthcheck}"
-
 schema_sql="${SCHEMA_SQL:-}"
 if [ -z "$schema_sql" ]; then
   if [ -f /docker-entrypoint-initdb.d/01-schema.sql ]; then
@@ -30,6 +27,9 @@ if [ "${1:-}" = --self-test ]; then
   echo 'OK: schema marker not duplicated in docker-compose.yml'
   exit 0
 fi
+
+: "${POSTGRES_USER:?POSTGRES_USER is required for postgres healthcheck}"
+: "${POSTGRES_DB:?POSTGRES_DB is required for postgres healthcheck}"
 
 if ! psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT 1' >/dev/null; then
   echo 'postgres connection/auth/database failed' >&2

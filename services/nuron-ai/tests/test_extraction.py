@@ -233,7 +233,7 @@ def test_extract_markdown_pdf_deletes_upload_when_parsing_fails(monkeypatch: pyt
 
 def _claimed_row(filename: str, body: str | None = None) -> tuple:
     """A db.claim RETURNING tuple: hash, filename, empty header, body, lease_token."""
-    return ("abc123", filename, None, None, None, None, [], body, 3)
+    return ("a" * 64, filename, None, None, None, None, [], body, 3)
 
 
 def test_extract_pending_retries_llama_cloud_connection_errors(monkeypatch: pytest.MonkeyPatch) -> None:
