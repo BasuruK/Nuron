@@ -3,6 +3,7 @@
 !.env.example
 node_modules/
 dist/
+.playwright-cli/
 
 # Python (services/nuron-ai)
 .venv/

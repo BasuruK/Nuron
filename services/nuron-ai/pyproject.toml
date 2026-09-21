@@ -31,7 +31,6 @@ module = ["defusedxml.*", "fsspec.*"]
 ignore_missing_imports = true
 
 
-[tool.bandit]
-# assert is the pytest idiom this whole suite is written in (see coding-standards.md
-# "Testing"); B101 flagging it is a permanent false positive here, not a real finding.
-exclude_dirs = ["tests"]
+[tool.bandit.assert_used]
+# Assert is the pytest idiom; suppress only B101 in test modules and scan everything else.
+skips = ["*/*_test.py", "*/test_*.py"]

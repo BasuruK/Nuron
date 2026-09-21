@@ -3,6 +3,9 @@
 # Marker text lives only in schema.sql (COMMENT ON SCHEMA nuron_ai).
 set -eu
 
+: "${POSTGRES_USER:?POSTGRES_USER is required for postgres healthcheck}"
+: "${POSTGRES_DB:?POSTGRES_DB is required for postgres healthcheck}"
+
 schema_sql="${SCHEMA_SQL:-}"
 if [ -z "$schema_sql" ]; then
   if [ -f /docker-entrypoint-initdb.d/01-schema.sql ]; then
@@ -33,8 +36,11 @@ if ! psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT 1' >/dev/null; then
   exit 1
 fi
 
-got=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-  "SELECT COALESCE(obj_description(oid, 'pg_namespace'), '') FROM pg_namespace WHERE nspname = 'nuron_ai'")
+if ! got=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+  "SELECT COALESCE(obj_description(oid, 'pg_namespace'), '') FROM pg_namespace WHERE nspname = 'nuron_ai'"); then
+  echo 'postgres schema marker query failed' >&2
+  exit 1
+fi
 
 if [ "$got" != "$expected" ]; then
   cat >&2 <<'EOF'
