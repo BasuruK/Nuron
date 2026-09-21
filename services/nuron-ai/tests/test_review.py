@@ -59,7 +59,10 @@ def review_test_db() -> Iterator[str]:
     dbname = f"nuron_review_test_{uuid.uuid4().hex}"
     admin = _admin_connect(os.environ["POSTGRES_DB"])
     try:
-        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
+        # Database names cannot be bound parameters; Identifier safely quotes them.
+        admin.execute(  # nosemgrep
+            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname))
+        )
         setup = _admin_connect(dbname)
         try:
             setup.execute("CREATE SCHEMA nuron_ai AUTHORIZATION nuron_ai_svc")
@@ -69,7 +72,7 @@ def review_test_db() -> Iterator[str]:
             setup.close()
         yield dbname
     finally:
-        admin.execute(
+        admin.execute(  # nosemgrep
             sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
                 sql.Identifier(dbname)
             )
