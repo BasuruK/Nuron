@@ -25,11 +25,11 @@ services:
     #   docker compose down -v && docker compose up -d
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      NURON_AI_DB_PASSWORD: ${NURON_AI_DB_PASSWORD}
-      NURON_API_DB_PASSWORD: ${NURON_API_DB_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      NURON_AI_DB_PASSWORD: ${NURON_AI_DB_PASSWORD:?NURON_AI_DB_PASSWORD is required}
+      NURON_API_DB_PASSWORD: ${NURON_API_DB_PASSWORD:?NURON_API_DB_PASSWORD is required}
     volumes:
       # Postgres 18+ images store data in a pg_ctlcluster-style versioned subdirectory,
       # so the mount point is the parent dir, not .../data (docker-library/postgres#37).
@@ -59,7 +59,7 @@ services:
       # Any other NEO4J_-prefixed var is converted to a config setting by the image's
       # entrypoint, so the password only ever travels inside NEO4J_AUTH -- a second
       # NEO4J_PASSWORD var here would be rejected at startup as an unrecognized setting.
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
     volumes:
       - neo4j_data:/data
     # ports:
@@ -102,8 +102,8 @@ services:
       RUSTFS_ADDRESS: 0.0.0.0:9000
       RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
       RUSTFS_CONSOLE_ENABLE: "true"
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
     volumes:
       - rustfs_data:/data/rustfs0
     ports:
