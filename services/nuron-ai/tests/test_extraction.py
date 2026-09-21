@@ -300,6 +300,28 @@ def test_extract_pending_surfaces_lost_lease_during_release() -> None:
     conn.commit.assert_called_once_with()
 
 
+def test_extract_pending_preserves_lost_lease_when_rollback_also_fails() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = _claimed_row("decision.md")
+    conn.execute.return_value.rowcount = 0
+    conn.rollback.side_effect = psycopg.OperationalError("connection closed")
+    storage = MagicMock(spec=ObjectStorage)
+    storage.get.return_value = b"# Decision\n"
+
+    with pytest.raises(RuntimeError, match="lost lease") as raised:
+        extract_pending(
+            conn,
+            storage,
+            "worker-1",
+            llama_parse_api_key=None,
+            llama_parse_tier=None,
+        )
+
+    assert raised.value.__notes__ == [
+        "rollback after lost lease also failed: OperationalError: connection closed",
+    ]
+
+
 def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("note.json")

@@ -190,8 +190,15 @@ def _release(
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
     if cursor.rowcount != 1:
-        conn.rollback()
-        raise RuntimeError(f"lost lease while releasing {digest}")
+        lost_lease = RuntimeError(f"lost lease while releasing {digest}")
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            lost_lease.add_note(
+                "rollback after lost lease also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise lost_lease
     conn.commit()
 
 
