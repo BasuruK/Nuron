@@ -20,8 +20,8 @@ from nuron_ai.storage import CorruptedWriteError, ObjectStorage
 
 logger = logging.getLogger(__name__)
 
-_REVIEW_LEASE_SECONDS = 1800.0  # a human review session, not a worker poll -- extraction.py's 300s would time out mid-edit.
-_PROMOTION_LEASE_SECONDS = 300.0  # automatic flip, no human wait -- matches extraction.py's worker lease.
+_REVIEW_LEASE_SECONDS = 1800.0  # a human review session; worker leases would time out mid-edit.
+_PROMOTION_LEASE_SECONDS = 300.0  # automatic flip, no human wait.
 _POLL_DELAY_SECONDS = 5.0
 _RETRY_DELAY_SECONDS = 60.0
 _PENDING_PAGE_SIZE = 100
@@ -72,6 +72,7 @@ def list_pending(
         SELECT content_hash, original_filename, title, created_at
         FROM nuron_ai.documents
         WHERE state = 'awaiting_review'
+          AND (lease_until IS NULL OR lease_until < clock_timestamp())
         ORDER BY created_at, content_hash
         LIMIT %(limit)s
         OFFSET %(offset)s
@@ -115,6 +116,7 @@ def save_edit(
           AND claimed_by = %(worker_id)s
           AND lease_token = %(lease_token)s
           AND state = 'awaiting_review'
+          AND lease_until > clock_timestamp()
         RETURNING content_hash
         """,
         {

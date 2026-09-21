@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_DOCX_XML_BYTES = 25 * 1024 * 1024
 _MAX_DOCX_COMPRESSION_RATIO = 100
-_LEASE_SECONDS = 300.0
+_LEASE_SECONDS = 600.0
 _PDF_PARSE_TIMEOUT_SECONDS = 240.0
 _MAX_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 60.0
@@ -175,7 +175,7 @@ def _release(
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
     # The operation enum selects static fragments; document data only enters bound params.
-    conn.execute(  # nosemgrep
+    cursor = conn.execute(  # nosemgrep
         sql.SQL(
             """
         UPDATE nuron_ai.documents
@@ -189,6 +189,9 @@ def _release(
         ).format(_RELEASE_SET_SQL[operation]),
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise RuntimeError(f"lost lease while releasing {digest}")
     conn.commit()
 
 

@@ -5,6 +5,7 @@ NU-005 note) -- nuron-ai isn't containerized yet.
 """
 
 import os
+import math
 from typing import Any
 
 import psycopg
@@ -34,31 +35,43 @@ def claim(
     Shared by every pipeline stage (docs/tracer-bullet-01.md "Worker claim / lease"): the
     review queue reuses the exact same SKIP LOCKED contract as the automated workers.
     """
+    if not math.isfinite(lease_seconds) or lease_seconds <= 0:
+        raise ValueError("lease_seconds must be finite and positive")
     # RETURNING is a fixed column list in this statement. Composing it from a caller
     # fragment (`sql.SQL(...) + returning` or .format()) is what Opengrep/Bandit flag
     # as SQL injection, even though the fragment was always a hardcoded literal.
-    claimed = conn.execute(
-        sql.SQL(
-            """
-            UPDATE nuron_ai.documents
-            SET claimed_by = %(worker_id)s,
-                lease_until = now() + %(lease_seconds)s * interval '1 second',
-                lease_token = lease_token + 1
-            WHERE content_hash = (
-                SELECT content_hash
-                FROM nuron_ai.documents
-                WHERE state = %(state)s::nuron_ai.pipeline_state
-                  AND (lease_until IS NULL OR lease_until < now())
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-                ORDER BY created_at
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
+    try:
+        claimed = conn.execute(
+            sql.SQL(
+                """
+                UPDATE nuron_ai.documents
+                SET claimed_by = %(worker_id)s,
+                    lease_until = now() + %(lease_seconds)s * interval '1 second',
+                    lease_token = lease_token + 1
+                WHERE content_hash = (
+                    SELECT content_hash
+                    FROM nuron_ai.documents
+                    WHERE state = %(state)s::nuron_ai.pipeline_state
+                      AND (lease_until IS NULL OR lease_until < now())
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+                    ORDER BY created_at
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                RETURNING content_hash, original_filename, title, author, author_source,
+                          document_date, tags, body, lease_token
+                """
+            ),
+            {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
+        ).fetchone()
+        conn.commit()
+        return claimed
+    except psycopg.Error as err:
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            err.add_note(
+                "rollback after claim failure also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
             )
-            RETURNING content_hash, original_filename, title, author, author_source,
-                      document_date, tags, body, lease_token
-            """
-        ),
-        {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
-    ).fetchone()
-    conn.commit()
-    return claimed
+        raise
