@@ -67,6 +67,28 @@ def test_iter_landable_recurses_into_nested_directories(tmp_path: Path) -> None:
     assert results == [(target, b"# Nested\n")]
 
 
+def test_iter_landable_yields_before_traversing_the_whole_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "first.md"
+    target.write_bytes(b"# First\n")
+    _age_file(target, STABILITY_WINDOW + 1)
+    traversal_resumed = False
+
+    def walk(
+        _root: Path, *, onerror: object, followlinks: bool
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        nonlocal traversal_resumed
+        yield str(tmp_path), [], [target.name]
+        traversal_resumed = True
+
+    monkeypatch.setattr(watcher.os, "walk", walk)
+    landable = iter_landable(tmp_path, STABILITY_WINDOW)
+
+    assert next(landable) == (target, b"# First\n")
+    assert not traversal_resumed
+
+
 def test_iter_landable_skips_symlink_to_file_outside_root(tmp_path: Path) -> None:
     watched = tmp_path / "watched"
     watched.mkdir()
@@ -414,6 +436,29 @@ def test_main_retries_after_transient_backend_failure(
     assert sleep_delays == [60.0, 3600.0]
 
 
+@pytest.mark.parametrize(
+    ("scan_interval", "stability_window", "message"),
+    [
+        ("0", "30", "SCAN_INTERVAL_HOURS"),
+        ("nan", "30", "SCAN_INTERVAL_HOURS"),
+        ("1", "-1", "MTIME_STABILITY_WINDOW_SECONDS"),
+        ("1", "inf", "MTIME_STABILITY_WINDOW_SECONDS"),
+    ],
+)
+def test_main_rejects_invalid_timing_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    scan_interval: str,
+    stability_window: str,
+    message: str,
+) -> None:
+    monkeypatch.setenv("WATCHED_DIRECTORY", ".")
+    monkeypatch.setenv("SCAN_INTERVAL_HOURS", scan_interval)
+    monkeypatch.setenv("MTIME_STABILITY_WINDOW_SECONDS", stability_window)
+
+    with pytest.raises(ValueError, match=message):
+        watcher.main()
+
+
 def test_scan_continues_after_file_failure_then_raises(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -454,6 +499,27 @@ def test_scan_continues_after_file_failure_then_raises(
         f"failed to land watched file {second_failing}: OSError: RustFS rejected second file",
     ]
     assert caplog.records == []
+
+
+def test_scan_preserves_landing_error_when_rollback_also_fails(tmp_path: Path) -> None:
+    target = tmp_path / "failing.md"
+    target.write_bytes(b"# Failing\n")
+    _age_file(target, STABILITY_WINDOW + 1)
+    storage = MagicMock(spec=ObjectStorage)
+    storage.put.side_effect = OSError("RustFS unavailable")
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.rollback.side_effect = psycopg.OperationalError("connection closed")
+
+    with pytest.raises(OSError, match="RustFS unavailable") as raised:
+        scan(tmp_path, storage, conn, STABILITY_WINDOW)
+
+    assert raised.value.__notes__ == [
+        f"failed to land watched file {target}: OSError: RustFS unavailable",
+        (
+            "rollback after landing failure also failed: "
+            "OperationalError: connection closed"
+        ),
+    ]
 
 
 def test_scan_lands_reachable_file_then_raises_traversal_failure(

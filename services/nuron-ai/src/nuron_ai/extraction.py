@@ -29,12 +29,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_DOCX_XML_BYTES = 25 * 1024 * 1024
 _MAX_DOCX_COMPRESSION_RATIO = 100
-_LEASE_SECONDS = 300.0
+_LEASE_SECONDS = 600.0
 _PDF_PARSE_TIMEOUT_SECONDS = 240.0
 _MAX_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 60.0
 _POLL_DELAY_SECONDS = 5.0
-
 
 class ExtractionDeferred(RuntimeError):
     """Raised when extraction is unavailable under the current configuration."""
@@ -166,38 +165,6 @@ def extract_markdown(
     raise PermanentExtractionError(f"unsupported extension for extraction: {suffix!r}")
 
 
-def _claim(
-    conn: psycopg.Connection,
-    worker_id: str,
-    state: str,
-    *,
-    lease_seconds: float = _LEASE_SECONDS,
-) -> tuple[Any, ...] | None:
-    """Claims one claimable row in `state`, bumping the lease -- None when nothing to take."""
-    claimed = conn.execute(
-        """
-        UPDATE nuron_ai.documents
-        SET claimed_by = %(worker_id)s,
-            lease_until = now() + %(lease_seconds)s * interval '1 second',
-            lease_token = lease_token + 1
-        WHERE content_hash = (
-            SELECT content_hash
-            FROM nuron_ai.documents
-            WHERE state = %(state)s::nuron_ai.pipeline_state
-              AND (lease_until IS NULL OR lease_until < now())
-              AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-            ORDER BY created_at
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-        )
-        RETURNING content_hash, original_filename, body, lease_token
-        """,
-        {"worker_id": worker_id, "lease_seconds": lease_seconds, "state": state},
-    ).fetchone()
-    conn.commit()
-    return claimed
-
-
 def _release(
     conn: psycopg.Connection,
     digest: str,
@@ -208,7 +175,7 @@ def _release(
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
     # The operation enum selects static fragments; document data only enters bound params.
-    conn.execute(  # nosemgrep
+    cursor = conn.execute(  # nosemgrep
         sql.SQL(
             """
         UPDATE nuron_ai.documents
@@ -222,6 +189,16 @@ def _release(
         ).format(_RELEASE_SET_SQL[operation]),
         {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
     )
+    if cursor.rowcount != 1:
+        lost_lease = RuntimeError(f"lost lease while releasing {digest}")
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            lost_lease.add_note(
+                "rollback after lost lease also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise lost_lease
     conn.commit()
 
 
@@ -235,11 +212,11 @@ def extract_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one landed row and advances, defers, retries, or fails extraction."""
-    claimed = _claim(conn, worker_id, "landed", lease_seconds=lease_seconds)
+    claimed = db.claim(conn, worker_id, "landed", lease_seconds=lease_seconds)
     if claimed is None:
         return False
 
-    digest, original_filename, _, lease_token = claimed
+    digest, original_filename, _, _, _, _, _, _, lease_token = claimed
     try:
         data = storage.get(object_key(digest))
         markdown = extract_markdown(
@@ -306,11 +283,11 @@ def parse_pending(
     lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one extracted row and advances it through deterministic header parsing."""
-    claimed = _claim(conn, worker_id, "extracted", lease_seconds=lease_seconds)
+    claimed = db.claim(conn, worker_id, "extracted", lease_seconds=lease_seconds)
     if claimed is None:
         return False
 
-    digest, original_filename, body, lease_token = claimed
+    digest, original_filename, _, _, _, _, _, body, lease_token = claimed
     try:
         header = parse_header(body, filename=original_filename, source_owner=source_owner)
     except Exception as err:

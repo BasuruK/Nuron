@@ -6,6 +6,7 @@ as a bare row at state 'landed' -- format extraction and header parsing are NU-0
 """
 
 import logging
+import math
 import os
 import stat
 import time
@@ -32,20 +33,22 @@ def iter_landable(root: Path, stability_window_seconds: float) -> Iterator[tuple
     Unreadable, oversized, zero-byte, and non-UTF-8 text files are logged and skipped.
     """
     now = time.time()
-    paths: list[Path] = []
     traversal_errors: list[OSError] = []
 
     def record_traversal_error(error: OSError) -> None:
         """Records an enumeration failure for propagation after reachable files."""
         traversal_errors.append(error)
 
-    for directory, directory_names, file_names in os.walk(
-        root, onerror=record_traversal_error, followlinks=False
-    ):
-        directory_names.sort()
-        paths.extend(Path(directory) / file_name for file_name in file_names)
+    def iter_paths() -> Iterator[Path]:
+        """Yields each directory's files without retaining the whole tree."""
+        for directory, directory_names, file_names in os.walk(
+            root, onerror=record_traversal_error, followlinks=False
+        ):
+            directory_names.sort()
+            for file_name in sorted(file_names):
+                yield Path(directory) / file_name
 
-    for path in sorted(paths):
+    for path in iter_paths():
         if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             continue
 
@@ -184,7 +187,13 @@ def scan(
             first_error.add_note(
                 f"failed to land watched file {path}: {type(err).__name__}: {err}"
             )
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception as rollback_err:
+                first_error.add_note(
+                    "rollback after landing failure also failed: "
+                    f"{type(rollback_err).__name__}: {rollback_err}"
+                )
 
     if first_error is not None:
         raise first_error
@@ -196,6 +205,10 @@ def main() -> None:
     root = Path(os.environ["WATCHED_DIRECTORY"])
     interval_seconds = float(os.environ["SCAN_INTERVAL_HOURS"]) * 3600
     stability_window_seconds = float(os.environ["MTIME_STABILITY_WINDOW_SECONDS"])
+    if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+        raise ValueError("SCAN_INTERVAL_HOURS must be finite and greater than 0")
+    if not math.isfinite(stability_window_seconds) or stability_window_seconds < 0:
+        raise ValueError("MTIME_STABILITY_WINDOW_SECONDS must be finite and non-negative")
     storage: ObjectStorage | None = None
 
     while True:

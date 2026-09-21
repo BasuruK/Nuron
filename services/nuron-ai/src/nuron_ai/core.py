@@ -31,6 +31,8 @@ def content_hash(data: bytes) -> str:
 
 def object_key(digest: str) -> str:
     """Returns the RustFS object key for a content hash: {digest[0:2]}/{digest}."""
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("digest must be a lowercase sha256 hex digest")
     return f"{digest[:2]}/{digest}"
 
 
@@ -224,5 +226,7 @@ def plan_delta(
 
 def release_ref(refs: frozenset[str], ref: str) -> tuple[frozenset[str], bool]:
     """Removes one provenance ref; returns the remaining refs and whether the node should die."""
+    if ref not in refs:
+        raise ValueError("ref is not present")
     remaining = refs - {ref}
     return remaining, len(remaining) == 0

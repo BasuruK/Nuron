@@ -79,9 +79,10 @@ CREATE TABLE nuron_ai.documents (
     state               nuron_ai.pipeline_state NOT NULL DEFAULT 'landed',
 
     -- Worker claim / lease (tracer-bullet-01.md "Worker claim / lease").
-    claimed_by          TEXT,
+    claimed_by          TEXT CHECK (claimed_by IS NULL OR btrim(claimed_by) <> ''),
     lease_until         TIMESTAMPTZ,
     lease_token         BIGINT NOT NULL DEFAULT 0,
+    CHECK ((claimed_by IS NULL) = (lease_until IS NULL)),
 
     -- Backoff bookkeeping for the transition currently in flight (tracer-bullet-01.md
     -- "Attempts"). Reset to 0 / NULL whenever the row advances to a new state.
@@ -111,7 +112,7 @@ COMMENT ON COLUMN nuron_ai.documents.lease_token IS
 -- file, is the Evidence root that evidence_span offsets resolve into (CONTEXT.md).
 CREATE TABLE nuron_ai.reviewed_sources (
     id                   BIGSERIAL PRIMARY KEY,
-    content_hash         TEXT NOT NULL REFERENCES nuron_ai.documents (content_hash),
+    content_hash         TEXT NOT NULL REFERENCES nuron_ai.documents (content_hash) ON DELETE CASCADE,
     version              INTEGER NOT NULL CHECK (version > 0),
     title                TEXT,
     author               TEXT,
@@ -121,7 +122,8 @@ CREATE TABLE nuron_ai.reviewed_sources (
     body                 TEXT NOT NULL,
     approved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    UNIQUE (content_hash, version)
+    UNIQUE (content_hash, version),
+    UNIQUE (id, content_hash)
 );
 
 COMMENT ON TABLE nuron_ai.reviewed_sources IS
@@ -146,10 +148,12 @@ COMMENT ON TABLE nuron_ai.entity_aliases IS
 CREATE TABLE nuron_ai.node_provenance (
     node_key             TEXT NOT NULL,
     content_hash         TEXT NOT NULL REFERENCES nuron_ai.documents (content_hash) ON DELETE CASCADE,
-    reviewed_source_id   BIGINT NOT NULL REFERENCES nuron_ai.reviewed_sources (id),
+    reviewed_source_id   BIGINT NOT NULL,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (node_key, content_hash)
+    PRIMARY KEY (node_key, content_hash),
+    FOREIGN KEY (reviewed_source_id, content_hash)
+        REFERENCES nuron_ai.reviewed_sources (id, content_hash) ON DELETE CASCADE
 );
 
 COMMENT ON TABLE nuron_ai.node_provenance IS

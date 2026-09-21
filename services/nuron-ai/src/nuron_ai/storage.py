@@ -5,12 +5,15 @@ Beta status bites -- see docs/tracer-bullet-01.md's Object storage row.
 """
 
 import os
+import re
 from dataclasses import dataclass
 
 import fsspec
 from fsspec.spec import AbstractFileSystem
 
 from nuron_ai.core import content_hash, object_key
+
+_OBJECT_KEY_RE = re.compile(r"([0-9a-f]{2})/([0-9a-f]{64})")
 
 class CorruptedWriteError(RuntimeError):
     """Raised when a stored object's read-back hash does not match what was put."""
@@ -40,9 +43,12 @@ class ObjectStorage:
 
     def get(self, key: str) -> bytes:
         """Reads bytes at key; raises if they don't hash to the digest encoded in key."""
+        key_match = _OBJECT_KEY_RE.fullmatch(key)
+        if key_match is None or key_match.group(1) != key_match.group(2)[:2]:
+            raise ValueError(f"invalid object key {key!r}")
         with self.fs.open(f"{self.root}/{key}", "rb") as handle:
             data = handle.read()
-        digest = key.rsplit("/", 1)[-1]
+        digest = key_match.group(2)
         if content_hash(data) != digest:
             raise CorruptedWriteError(f"read-back hash mismatch for key {key!r}")
         return data

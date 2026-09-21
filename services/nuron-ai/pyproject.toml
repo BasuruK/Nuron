@@ -29,3 +29,8 @@ dev = [
 # These libraries ship no py.typed marker; nothing to check against.
 module = ["defusedxml.*", "fsspec.*"]
 ignore_missing_imports = true
+
+
+[tool.bandit.assert_used]
+# Assert is the pytest idiom; suppress only B101 in test modules and scan everything else.
+skips = ["*/*_test.py", "*/test_*.py"]

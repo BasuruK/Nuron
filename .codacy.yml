@@ -1,0 +1,10 @@
+---
+# Codacy-native Bandit config keeps tests scanned while suppressing pytest assertions only.
+# https://docs.codacy.com/repositories-configure/codacy-configuration-file/
+engines:
+  bandit:
+    config:
+      assert_used:
+        skips:
+          - "*/*_test.py"
+          - "*/test_*.py"
