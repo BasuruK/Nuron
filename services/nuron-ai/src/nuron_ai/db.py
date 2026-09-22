@@ -75,3 +75,55 @@ def claim(
                 f"{type(rollback_err).__name__}: {rollback_err}"
             )
         raise
+
+
+def release(
+    conn: psycopg.Connection,
+    digest: str,
+    worker_id: str,
+    lease_token: int,
+    set_sql: sql.Composable,
+    params: dict[str, Any],
+) -> None:
+    """Updates and releases a claimed row only while this worker still holds its lease.
+
+    Shared by every pipeline stage built on `claim()` above that needs the same
+    lease-still-held guard on its release UPDATE (docs/tracer-bullet-01.md "Worker claim / lease").
+    `set_sql` selects the caller's own static SET fragment for the outcome; only document
+    data enters `params` as bound values.
+    """
+    try:
+        cursor = conn.execute(  # nosemgrep
+            sql.SQL(
+                """
+                UPDATE nuron_ai.documents
+                SET {},
+                    claimed_by = NULL,
+                    lease_until = NULL
+                WHERE content_hash = %(content_hash)s
+                  AND claimed_by = %(worker_id)s
+                  AND lease_token = %(lease_token)s
+                """
+            ).format(set_sql),
+            {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
+        )
+    except psycopg.Error as err:
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            err.add_note(
+                "rollback after release failure also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise
+    if cursor.rowcount != 1:
+        lost_lease = RuntimeError(f"lost lease while releasing {digest}")
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            lost_lease.add_note(
+                "rollback after lost lease also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise lost_lease
+    conn.commit()
