@@ -175,20 +175,30 @@ def _release(
 ) -> None:
     """Updates and releases a row only while this worker still holds its lease."""
     # The operation enum selects static fragments; document data only enters bound params.
-    cursor = conn.execute(  # nosemgrep
-        sql.SQL(
+    try:
+        cursor = conn.execute(  # nosemgrep
+            sql.SQL(
+                """
+            UPDATE nuron_ai.documents
+            SET {},
+                claimed_by = NULL,
+                lease_until = NULL
+            WHERE content_hash = %(content_hash)s
+              AND claimed_by = %(worker_id)s
+              AND lease_token = %(lease_token)s
             """
-        UPDATE nuron_ai.documents
-        SET {},
-            claimed_by = NULL,
-            lease_until = NULL
-        WHERE content_hash = %(content_hash)s
-          AND claimed_by = %(worker_id)s
-          AND lease_token = %(lease_token)s
-        """
-        ).format(_RELEASE_SET_SQL[operation]),
-        {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
-    )
+            ).format(_RELEASE_SET_SQL[operation]),
+            {**params, "content_hash": digest, "worker_id": worker_id, "lease_token": lease_token},
+        )
+    except psycopg.Error as err:
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            err.add_note(
+                "rollback after release failure also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise
     if cursor.rowcount != 1:
         lost_lease = RuntimeError(f"lost lease while releasing {digest}")
         try:
