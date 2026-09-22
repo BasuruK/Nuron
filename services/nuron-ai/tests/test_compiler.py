@@ -323,7 +323,9 @@ def test_compile_pending_retries_when_the_extractor_fails() -> None:
     assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
 
 
-def test_compile_pending_raises_when_the_reviewed_source_row_is_missing() -> None:
+def test_compile_pending_logs_releases_and_continues_when_the_reviewed_source_row_is_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.side_effect = [
         _claimed_row("decision.md", "# Decision\n"),
@@ -331,9 +333,14 @@ def test_compile_pending_raises_when_the_reviewed_source_row_is_missing() -> Non
     ]
     conn.execute.return_value.rowcount = 1
 
-    with pytest.raises(RuntimeError, match="should be impossible"):
-        compile_pending(conn, _StubExtractor(), "worker-1")
+    with caplog.at_level("ERROR"):
+        claimed = compile_pending(conn, _StubExtractor(), "worker-1")
 
+    assert claimed is True
+    assert any(
+        record.levelname == "ERROR" and "a" * 64 in record.message and "reviewed_sources" in record.message
+        for record in caplog.records
+    )
     retry_call = conn.execute.call_args_list[-1]
     assert "attempt_count = attempt_count + 1" in str(retry_call.args[0])
     assert retry_call.args[1]["retry_delay_seconds"] == compiler._RETRY_DELAY_SECONDS

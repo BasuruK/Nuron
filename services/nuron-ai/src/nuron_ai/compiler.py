@@ -244,10 +244,12 @@ def compile_pending(
     ).fetchone()
     conn.commit()
     if reviewed_source_row is None:
-        db.release(conn, digest, worker_id, lease_token, _RETRY_SET_SQL, _RETRY_PARAMS)
-        raise RuntimeError(
-            f"content_approved row {digest} has no reviewed_sources row -- should be impossible"
+        logger.error(
+            "content_approved row %s has no reviewed_sources row -- should be impossible",
+            digest,
         )
+        db.release(conn, digest, worker_id, lease_token, _RETRY_SET_SQL, _RETRY_PARAMS)
+        return True
     reviewed_source_id = reviewed_source_row[0]
 
     try:
