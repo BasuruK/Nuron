@@ -97,10 +97,7 @@ CREATE TABLE nuron_ai.documents (
     document_date        DATE,
     tags                 TEXT[] NOT NULL DEFAULT '{}',
     body                 TEXT,
-
-    -- Enriched typed triples (nodes/relations/decisions[]) filled by the Compiler on
-    -- content_approved -> compiled (NU-008). Consumed, not recomputed, by NU-009's persist step.
-    compiled_graph        JSONB,
+    compiled_graph       JSONB,
 
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );

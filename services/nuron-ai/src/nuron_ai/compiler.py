@@ -11,10 +11,9 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
-from enum import Enum
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 import psycopg
 from llama_index.core.graph_stores.types import KG_NODES_KEY, KG_RELATIONS_KEY, EntityNode, Relation
@@ -35,10 +34,8 @@ _RETRY_DELAY_SECONDS = 60.0
 _POLL_DELAY_SECONDS = 5.0
 
 
-class GraphExtractor(Protocol):
-    """Structural type for SchemaLLMPathExtractor -- lets tests use a stub with no live LLM."""
-
-    def __call__(self, nodes: Sequence[BaseNode], **kwargs: Any) -> list[BaseNode]: ...
+# Structural type for SchemaLLMPathExtractor -- lets tests use a stub with no live LLM.
+GraphExtractor = Callable[[Sequence[BaseNode]], list[BaseNode]]
 
 
 _PossibleEntities = Literal["DECISION", "ENTITY", "EVIDENCE"]
@@ -107,11 +104,6 @@ def check_structured_output(kg_extractor: GraphExtractor) -> None:
         )
 
 
-def _entity_key(node: EntityNode) -> str:
-    """Returns a node's identity key -- core.natural_key, not the library's own EntityNode.id."""
-    return natural_key(node.name, node.label)
-
-
 def enrich_and_serialize(
     entity_nodes: Sequence[EntityNode],
     relations: Sequence[Relation],
@@ -136,7 +128,7 @@ def enrich_and_serialize(
     id_to_key: dict[str, str] = {}
 
     for node in entity_nodes:
-        node_key = _entity_key(node)
+        node_key = natural_key(node.name, node.label)
         id_to_key[node.id] = node_key
         if node_key in nodes_by_key:
             continue
@@ -162,25 +154,21 @@ def enrich_and_serialize(
 
     # Relation.source_id/target_id are the participating EntityNode.id values from this same
     # call -- resolve them back to the natural key every node above was keyed on.
-    seen_relations: set[tuple[str, str, str]] = set()
-    relation_dicts: list[dict[str, Any]] = []
+    relations_by_id: dict[tuple[str, str, str], dict[str, Any]] = {}
     for relation in relations:
         source_key = id_to_key[relation.source_id]
         target_key = id_to_key[relation.target_id]
-        relation_id = (source_key, relation.label, target_key)
-        if relation_id in seen_relations:
-            continue
-        seen_relations.add(relation_id)
-        relation_dicts.append(
+        relations_by_id.setdefault(
+            (source_key, relation.label, target_key),
             {
                 "label": relation.label,
                 "source_key": source_key,
                 "target_key": target_key,
                 "properties": dict(relation.properties),
-            }
+            },
         )
 
-    return {"nodes": list(nodes_by_key.values()), "relations": relation_dicts, "decisions": decisions}
+    return {"nodes": list(nodes_by_key.values()), "relations": list(relations_by_id.values()), "decisions": decisions}
 
 
 def compile_graph(
@@ -221,12 +209,7 @@ def compile_graph(
     return compiled
 
 
-class _ReleaseOperation(Enum):
-    RETRY = "retry"
-    COMPILED = "compiled"
-
-
-_ATTEMPT_RELEASE_SQL = sql.SQL(
+_RETRY_SET_SQL = sql.SQL(
     """
     attempt_count = attempt_count + 1,
     next_attempt_at = now() + %(retry_delay_seconds)s * interval '1 second',
@@ -236,34 +219,20 @@ _ATTEMPT_RELEASE_SQL = sql.SQL(
     """
 )
 
-_RELEASE_SET_SQL = {
-    _ReleaseOperation.RETRY: _ATTEMPT_RELEASE_SQL,
-    _ReleaseOperation.COMPILED: sql.SQL(
-        "state = 'compiled', compiled_graph = %(compiled_graph)s, attempt_count = 0, next_attempt_at = NULL"
-    ),
-}
+_RETRY_PARAMS: dict[str, Any] = {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS}
 
-
-def _release(
-    conn: psycopg.Connection,
-    digest: str,
-    worker_id: str,
-    lease_token: int,
-    operation: _ReleaseOperation,
-    params: dict[str, Any],
-) -> None:
-    """Releases a claimed row via db.release, picking this module's own SET fragment for the outcome."""
-    db.release(conn, digest, worker_id, lease_token, _RELEASE_SET_SQL[operation], params)
+_COMPILED_SET_SQL = sql.SQL(
+    "state = 'compiled', compiled_graph = %(compiled_graph)s, attempt_count = 0, next_attempt_at = NULL"
+)
 
 
 def compile_pending(
     conn: psycopg.Connection,
     kg_extractor: GraphExtractor,
     worker_id: str,
-    lease_seconds: float = _LEASE_SECONDS,
 ) -> bool:
     """Claims one content_approved row and advances it to compiled with enriched typed triples."""
-    claimed = db.claim(conn, worker_id, "content_approved", lease_seconds=lease_seconds)
+    claimed = db.claim(conn, worker_id, "content_approved", lease_seconds=_LEASE_SECONDS)
     if claimed is None:
         return False
 
@@ -275,14 +244,7 @@ def compile_pending(
     ).fetchone()
     conn.commit()
     if reviewed_source_row is None:
-        _release(
-            conn,
-            digest,
-            worker_id,
-            lease_token,
-            _ReleaseOperation.RETRY,
-            {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
-        )
+        db.release(conn, digest, worker_id, lease_token, _RETRY_SET_SQL, _RETRY_PARAMS)
         raise RuntimeError(
             f"content_approved row {digest} has no reviewed_sources row -- should be impossible"
         )
@@ -300,24 +262,10 @@ def compile_pending(
         )
     except Exception as err:
         logger.warning("compilation failed for %s (%s): %s", digest, original_filename, err)
-        _release(
-            conn,
-            digest,
-            worker_id,
-            lease_token,
-            _ReleaseOperation.RETRY,
-            {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS},
-        )
+        db.release(conn, digest, worker_id, lease_token, _RETRY_SET_SQL, _RETRY_PARAMS)
         return True
 
-    _release(
-        conn,
-        digest,
-        worker_id,
-        lease_token,
-        _ReleaseOperation.COMPILED,
-        {"compiled_graph": Jsonb(compiled)},
-    )
+    db.release(conn, digest, worker_id, lease_token, _COMPILED_SET_SQL, {"compiled_graph": Jsonb(compiled)})
     return True
 
 
@@ -332,15 +280,13 @@ def main() -> None:
         try:
             with db.from_env() as conn:
                 while True:
-                    did_compile = compile_pending(conn, kg_extractor, worker_id)
-                    if not did_compile:
+                    if not compile_pending(conn, kg_extractor, worker_id):
                         time.sleep(_POLL_DELAY_SECONDS)
         except Exception:
             logger.exception(
                 "compiler worker failed; retrying after %.0f seconds", _RETRY_DELAY_SECONDS
             )
             time.sleep(_RETRY_DELAY_SECONDS)
-            continue
 
 
 if __name__ == "__main__":

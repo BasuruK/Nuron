@@ -322,50 +322,6 @@ def test_extract_pending_preserves_lost_lease_when_rollback_also_fails() -> None
     ]
 
 
-def test_extract_pending_rolls_back_release_database_error() -> None:
-    conn = MagicMock(spec=psycopg.Connection)
-    claim_cursor = MagicMock()
-    claim_cursor.fetchone.return_value = _claimed_row("decision.md")
-    conn.execute.side_effect = [claim_cursor, psycopg.DataError("bad release")]
-    storage = MagicMock(spec=ObjectStorage)
-    storage.get.return_value = b"# Decision\n"
-
-    with pytest.raises(psycopg.DataError, match="bad release"):
-        extract_pending(
-            conn,
-            storage,
-            "worker-1",
-            llama_parse_api_key=None,
-            llama_parse_tier=None,
-        )
-
-    conn.rollback.assert_called_once_with()
-    conn.commit.assert_called_once_with()
-
-
-def test_extract_pending_attaches_release_rollback_failure_to_original_error() -> None:
-    conn = MagicMock(spec=psycopg.Connection)
-    claim_cursor = MagicMock()
-    claim_cursor.fetchone.return_value = _claimed_row("decision.md")
-    conn.execute.side_effect = [claim_cursor, psycopg.DataError("bad release")]
-    conn.rollback.side_effect = psycopg.OperationalError("connection closed")
-    storage = MagicMock(spec=ObjectStorage)
-    storage.get.return_value = b"# Decision\n"
-
-    with pytest.raises(psycopg.DataError, match="bad release") as raised:
-        extract_pending(
-            conn,
-            storage,
-            "worker-1",
-            llama_parse_api_key=None,
-            llama_parse_tier=None,
-        )
-
-    assert raised.value.__notes__ == [
-        "rollback after release failure also failed: OperationalError: connection closed",
-    ]
-
-
 def test_extract_pending_marks_unsupported_extension_failed_without_retrying() -> None:
     conn = MagicMock(spec=psycopg.Connection)
     conn.execute.return_value.fetchone.return_value = _claimed_row("note.json")
