@@ -243,7 +243,8 @@ def compile_pending(
     digest, original_filename, _, author, author_source, document_date, _, body, lease_token = claimed
 
     reviewed_source_row = conn.execute(
-        "SELECT id FROM nuron_ai.reviewed_sources WHERE content_hash = %(content_hash)s",
+        "SELECT id FROM nuron_ai.reviewed_sources WHERE content_hash = %(content_hash)s "
+        "ORDER BY version DESC LIMIT 1",
         {"content_hash": digest},
     ).fetchone()
     conn.commit()

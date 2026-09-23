@@ -370,6 +370,35 @@ def test_compile_pending_logs_releases_and_continues_when_the_reviewed_source_ro
     assert retry_call.args[1]["lease_token"] == 3
 
 
+def test_compile_pending_binds_provenance_to_the_latest_reviewed_source_version() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    stale_reviewed_source_id = 1
+    latest_reviewed_source_id = 9
+
+    def execute(query: object, _params: object = None) -> MagicMock:
+        result = MagicMock()
+        text = str(query)
+        if "reviewed_sources" in text:
+            picks_latest = "ORDER BY version DESC" in text and "LIMIT 1" in text
+            result.fetchone.return_value = (
+                (latest_reviewed_source_id,) if picks_latest else (stale_reviewed_source_id,)
+            )
+            return result
+        result.fetchone.return_value = _claimed_row("decision.md", "# Decision\n")
+        result.rowcount = 1
+        return result
+
+    conn.execute.side_effect = execute
+    decision = EntityNode(label="DECISION", name="drop session store")
+
+    assert compile_pending(conn, _StubExtractor(nodes=[decision]), "worker-1") is True
+
+    compiled_graph = conn.execute.call_args_list[-1].args[1]["compiled_graph"].obj
+    assert compiled_graph["nodes"][0]["properties"]["provenance"]["reviewed_source_id"] == (
+        latest_reviewed_source_id
+    )
+
+
 def test_main_reuses_one_connection_across_idle_polls_and_reconnects_after_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
