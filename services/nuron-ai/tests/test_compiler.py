@@ -150,6 +150,26 @@ def test_enrich_dedupes_the_same_entity_appearing_in_multiple_triplets() -> None
     assert sorted(keys) == sorted({"session store:ENTITY", "rate limiter:ENTITY"})
 
 
+def test_enrich_rejects_entity_id_that_maps_to_two_natural_keys() -> None:
+    # EntityNode.id is the name, so these share an id and disagree on natural key.
+    # A relation is present so a silent overwrite would compile instead of raising.
+    entity = EntityNode(label="ENTITY", name="atlas")
+    decision = EntityNode(label="DECISION", name="atlas")
+    relation = Relation(label="AFFECTS", source_id=entity.id, target_id=decision.id)
+
+    with pytest.raises(ValueError, match="already maps to 'atlas:ENTITY', not 'atlas:DECISION'"):
+        enrich_and_serialize(
+            [entity, decision],
+            [relation],
+            content_hash="e" * 64,
+            reviewed_source_id=1,
+            author=None,
+            author_source=None,
+            document_date=None,
+            body="irrelevant",
+        )
+
+
 def test_enrich_resolves_relations_to_natural_keys_and_dedupes_duplicates() -> None:
     decision = EntityNode(label="DECISION", name="drop session store")
     entity = EntityNode(label="ENTITY", name="rate limiter")

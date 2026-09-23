@@ -126,4 +126,14 @@ def release(
                 f"{type(rollback_err).__name__}: {rollback_err}"
             )
         raise lost_lease
-    conn.commit()
+    try:
+        conn.commit()
+    except psycopg.Error as err:
+        try:
+            conn.rollback()
+        except Exception as rollback_err:
+            err.add_note(
+                "rollback after release failure also failed: "
+                f"{type(rollback_err).__name__}: {rollback_err}"
+            )
+        raise

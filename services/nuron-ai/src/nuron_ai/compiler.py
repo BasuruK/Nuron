@@ -122,13 +122,17 @@ def enrich_and_serialize(
     # same entity (equal name + label) can come back several times -- dedupe onto its natural key.
     nodes_by_key: dict[str, dict[str, Any]] = {}
     decisions: list[str] = []
-    # ponytail: EntityNode.id is just node.name in this pinned version, not name+label -- two
-    # different-labeled entities sharing a name would collide here. Accepted: real Decisions read
-    # as sentences, real Entities as proper nouns, so this fixture domain never hits it.
+    # EntityNode.id is the name (quotes flattened), not name+label. One id must not
+    # resolve to two natural keys; a repeated id that already maps to this key is fine.
     id_to_key: dict[str, str] = {}
 
     for node in entity_nodes:
         node_key = natural_key(node.name, node.label)
+        existing_key = id_to_key.get(node.id)
+        if existing_key is not None and existing_key != node_key:
+            raise ValueError(
+                f"entity id {node.id!r} already maps to {existing_key!r}, not {node_key!r}"
+            )
         id_to_key[node.id] = node_key
         if node_key in nodes_by_key:
             continue
