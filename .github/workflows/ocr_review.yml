@@ -78,10 +78,10 @@ jobs:
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
-      - uses: alibaba/open-code-review@main
+      - uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
         with:
           github_token: ${{ steps.app-token.outputs.token }}
-          ocr_version: latest
+          ocr_version: "1.12.9"
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
           head_sha: ${{ steps.pr-context.outputs.head_sha }}
           llm_url: ${{ secrets.OCR_LLM_URL }}
