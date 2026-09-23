@@ -97,6 +97,7 @@ CREATE TABLE nuron_ai.documents (
     document_date        DATE,
     tags                 TEXT[] NOT NULL DEFAULT '{}',
     body                 TEXT,
+    compiled_graph       JSONB,
 
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -107,6 +108,8 @@ COMMENT ON COLUMN nuron_ai.documents.content_hash IS
     'sha256(bytes), hex-encoded. Document identity and the RustFS object key {hash[0:2]}/{hash} (ADR-0005) -- never a UUID.';
 COMMENT ON COLUMN nuron_ai.documents.lease_token IS
     'Incremented on every claim. The state-transition UPDATE is conditioned on (claimed_by, lease_token) so a reclaimed lease cannot advance the row out from under its new holder.';
+COMMENT ON COLUMN nuron_ai.documents.compiled_graph IS
+    'Compiler output: {"nodes": [...], "relations": [...], "decisions": [node_key, ...]}, each node/relation carrying its enrichment (author/author_source/timestamp on Decision nodes, evidence_span on Evidence nodes, a provenance ref on every node).';
 
 -- Immutable, versioned snapshot frozen at review-gate-1 approval. This, not the raw
 -- file, is the Evidence root that evidence_span offsets resolve into (CONTEXT.md).
