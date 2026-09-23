@@ -1,0 +1,90 @@
+name: OpenCodeReview PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Concurrency is chosen before this job's if. A flat ocr-<pr> group lets a
+    # rejected comment cancel a live review. Only an authorized run joins that
+    # group; everything else gets a group unique to this run.
+    concurrency:
+      group: >-
+        ${{
+          (
+            github.event_name == 'pull_request_target'
+            || (
+              github.event_name == 'issue_comment'
+              && github.event.issue.pull_request
+              && github.event.comment.user.type != 'Bot'
+              && (
+                github.event.comment.author_association == 'OWNER'
+                || github.event.comment.author_association == 'MEMBER'
+                || github.event.comment.author_association == 'COLLABORATOR'
+              )
+              && startsWith(github.event.comment.body, '/open-code-review')
+            )
+          )
+          && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
+          || format('noop-{0}', github.run_id)
+        }}
+      cancel-in-progress: true
+    if: |
+      github.event_name == 'pull_request_target'
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
+        && (
+          github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+        )
+        && startsWith(github.event.comment.body, '/open-code-review')
+      )
+    steps:
+      - name: Get GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Resolve comment PR refs
+        id: pr-context
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "Pull request number is not an integer" >&2
+              exit 1
+              ;;
+          esac
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          base_ref="$(jq -er .base.ref <<<"$pr")"
+          head_sha="$(jq -er .head.sha <<<"$pr")"
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      - uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
+        with:
+          github_token: ${{ steps.app-token.outputs.token }}
+          ocr_version: "1.12.9"
+          base_ref: ${{ steps.pr-context.outputs.base_ref }}
+          head_sha: ${{ steps.pr-context.outputs.head_sha }}
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL }}
+          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
