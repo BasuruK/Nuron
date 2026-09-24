@@ -12,7 +12,7 @@ dependencies = [
     "fsspec>=2026.7.0",
     "llama-cloud>=1.0",
     "llama-index-core==0.14.23",
-    "llama-index-llms-openai-like>=0.8.0",
+    "llama-index-llms-openai-like==0.8.0",
     "openai>=2.54.0,<3",
     "psycopg[binary]>=3.3.5",
     "s3fs>=2026.7.0",
