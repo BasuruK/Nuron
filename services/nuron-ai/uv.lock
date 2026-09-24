@@ -1482,7 +1482,7 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2026.7.0" },
     { name = "llama-cloud", specifier = ">=1.0" },
     { name = "llama-index-core", specifier = "==0.14.23" },
-    { name = "llama-index-llms-openai-like", specifier = ">=0.8.0" },
+    { name = "llama-index-llms-openai-like", specifier = "==0.8.0" },
     { name = "openai", specifier = ">=2.54.0,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.5" },
     { name = "s3fs", specifier = ">=2026.7.0" },

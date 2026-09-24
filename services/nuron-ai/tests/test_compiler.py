@@ -45,6 +45,33 @@ class _StubExtractor:
         return [node]
 
 
+# -- kg schema: Literals and _KG_VALIDATION_SCHEMA stay in lockstep ---------------
+
+
+def test_kg_schema_label_check_rejects_an_unknown_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compiler, "_KG_VALIDATION_SCHEMA", [("NOPE", "AFFECTS", "ENTITY")])
+    with pytest.raises(AssertionError, match="subject 'NOPE' not in _PossibleEntities"):
+        compiler._assert_kg_schema_labels()
+
+
+def test_kg_schema_label_check_rejects_an_unknown_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compiler, "_KG_VALIDATION_SCHEMA", [("DECISION", "AFFECTS", "NOPE")])
+    with pytest.raises(AssertionError, match="object 'NOPE' not in _PossibleEntities"):
+        compiler._assert_kg_schema_labels()
+
+
+def test_kg_schema_label_check_rejects_an_unknown_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compiler, "_KG_VALIDATION_SCHEMA", [("DECISION", "NOPE", "ENTITY")])
+    with pytest.raises(AssertionError, match="relation 'NOPE' not in _PossibleRelations"):
+        compiler._assert_kg_schema_labels()
+
+
 # -- enrich_and_serialize: pure logic, no LLM or DB -------------------------------
 
 

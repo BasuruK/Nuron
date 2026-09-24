@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import psycopg
 from llama_index.core.graph_stores.types import KG_NODES_KEY, KG_RELATIONS_KEY, EntityNode, Relation
@@ -53,6 +53,28 @@ _KG_VALIDATION_SCHEMA: list[tuple[str, str, str]] = [
     ("ENTITY", "PART_OF", "ENTITY"),
     ("ENTITY", "EVIDENCED_BY", "EVIDENCE"),
 ]
+
+
+def _assert_kg_schema_labels() -> None:
+    """Fails import if a schema triple uses a label or relation outside the Literals."""
+    entities = frozenset(get_args(_PossibleEntities))
+    relations = frozenset(get_args(_PossibleRelations))
+    for subject, relation, object_label in _KG_VALIDATION_SCHEMA:
+        if subject not in entities:
+            raise AssertionError(
+                f"kg_validation_schema subject {subject!r} not in _PossibleEntities"
+            )
+        if object_label not in entities:
+            raise AssertionError(
+                f"kg_validation_schema object {object_label!r} not in _PossibleEntities"
+            )
+        if relation not in relations:
+            raise AssertionError(
+                f"kg_validation_schema relation {relation!r} not in _PossibleRelations"
+            )
+
+
+_assert_kg_schema_labels()
 
 # Names both a Decision and an Entity joined by a schema-valid relation (DECISION AFFECTS
 # ENTITY) -- a lone Decision with nothing to relate to would get pruned to zero triplets by
