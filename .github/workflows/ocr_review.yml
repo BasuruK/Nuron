@@ -80,8 +80,21 @@ jobs:
               ;;
           esac
           pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          state="$(jq -er .state <<<"$pr")"
+          if [[ "$state" != "open" ]]; then
+            echo "Pull request is not open (state=${state})" >&2
+            exit 1
+          fi
           base_ref="$(jq -er .base.ref <<<"$pr")"
           head_sha="$(jq -er .head.sha <<<"$pr")"
+          if [[ ! "$base_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Pull request base ref has an unexpected shape" >&2
+            exit 1
+          fi
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Pull request head SHA has an unexpected shape" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
