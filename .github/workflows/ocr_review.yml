@@ -57,6 +57,7 @@ jobs:
         with:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
 
       - name: Resolve comment PR refs
         id: pr-context
