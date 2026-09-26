@@ -30,7 +30,10 @@ jobs:
                 || github.event.comment.author_association == 'MEMBER'
                 || github.event.comment.author_association == 'COLLABORATOR'
               )
-              && startsWith(github.event.comment.body, '/open-code-review')
+              && (
+                github.event.comment.body == '/open-code-review'
+                || startsWith(github.event.comment.body, '/open-code-review ')
+              )
             )
           )
           && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
@@ -48,7 +51,10 @@ jobs:
           || github.event.comment.author_association == 'MEMBER'
           || github.event.comment.author_association == 'COLLABORATOR'
         )
-        && startsWith(github.event.comment.body, '/open-code-review')
+        && (
+          github.event.comment.body == '/open-code-review'
+          || startsWith(github.event.comment.body, '/open-code-review ')
+        )
       )
     steps:
       - name: Get GitHub App Token
