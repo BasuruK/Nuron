@@ -98,6 +98,15 @@ jobs:
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
 
+      - name: Require LLM token
+        env:
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+        run: |
+          if [ -z "$OCR_LLM_TOKEN" ]; then
+            echo "::error::OCR_LLM_TOKEN secret is empty; the review cannot authenticate against the LLM endpoint (fork pull requests never receive secrets)"
+            exit 1
+          fi
+
       - uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
         with:
           github_token: ${{ steps.app-token.outputs.token }}
