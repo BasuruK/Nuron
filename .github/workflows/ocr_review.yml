@@ -30,7 +30,10 @@ jobs:
                 || github.event.comment.author_association == 'MEMBER'
                 || github.event.comment.author_association == 'COLLABORATOR'
               )
-              && startsWith(github.event.comment.body, '/open-code-review')
+              && (
+                github.event.comment.body == '/open-code-review'
+                || startsWith(github.event.comment.body, '/open-code-review ')
+              )
             )
           )
           && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
@@ -48,7 +51,10 @@ jobs:
           || github.event.comment.author_association == 'MEMBER'
           || github.event.comment.author_association == 'COLLABORATOR'
         )
-        && startsWith(github.event.comment.body, '/open-code-review')
+        && (
+          github.event.comment.body == '/open-code-review'
+          || startsWith(github.event.comment.body, '/open-code-review ')
+        )
       )
     steps:
       - name: Get GitHub App Token
@@ -57,6 +63,7 @@ jobs:
         with:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
 
       - name: Resolve comment PR refs
         id: pr-context
@@ -73,10 +80,32 @@ jobs:
               ;;
           esac
           pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          state="$(jq -er .state <<<"$pr")"
+          if [[ "$state" != "open" ]]; then
+            echo "Pull request is not open (state=${state})" >&2
+            exit 1
+          fi
           base_ref="$(jq -er .base.ref <<<"$pr")"
           head_sha="$(jq -er .head.sha <<<"$pr")"
+          if ! git check-ref-format "refs/heads/${base_ref}"; then
+            echo "Pull request base ref has an unexpected shape" >&2
+            exit 1
+          fi
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Pull request head SHA has an unexpected shape" >&2
+            exit 1
+          fi
           echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Require LLM token
+        env:
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+        run: |
+          if [ -z "$OCR_LLM_TOKEN" ]; then
+            echo "::error::OCR_LLM_TOKEN secret is empty; the review cannot authenticate against the LLM endpoint (fork pull requests never receive secrets)"
+            exit 1
+          fi
 
       - uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
         with:
@@ -85,6 +114,8 @@ jobs:
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
           head_sha: ${{ steps.pr-context.outputs.head_sha }}
           llm_url: ${{ secrets.OCR_LLM_URL }}
-          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_auth_token: ${{ secrets.OCR_LLM_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
-          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
+          llm_protocol: openai
+          llm_use_anthropic: "false"
+          llm_extra_body: '{"reasoning":{"enabled":true}}'
