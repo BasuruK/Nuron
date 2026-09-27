@@ -119,4 +119,3 @@ jobs:
           llm_protocol: openai
           llm_use_anthropic: "false"
           llm_reasoning_effort: max
-          llm_extra_body: "{}"
