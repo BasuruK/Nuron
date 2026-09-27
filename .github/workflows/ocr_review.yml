@@ -118,4 +118,4 @@ jobs:
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_protocol: openai
           llm_use_anthropic: "false"
-          llm_reasoning_effort: max
+          llm_reasoning_effort: ${{ vars.OCR_LLM_REASONING_EFFORT }}
