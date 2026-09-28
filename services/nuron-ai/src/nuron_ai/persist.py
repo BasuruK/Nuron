@@ -36,7 +36,7 @@ from openai import OpenAI
 from psycopg import sql
 
 from nuron_ai import db
-from nuron_ai.core import NodeDelta, plan_delta, release_ref, resolve_key
+from nuron_ai.core import NodeDelta, plan_delta, resolve_key
 
 logger = logging.getLogger(__name__)
 
@@ -130,24 +130,80 @@ def _embedding_text(label: str, display_name: str) -> str:
     return f"{display_name} ({label})"
 
 
-def _node_properties(
-    content: dict[str, Any], refs: frozenset[str], model_id: str, dimensions: int
-) -> dict[str, Any]:
-    """Builds a node's full Neo4j properties: its content plus provenance and embedding bookkeeping."""
+def _node_properties(content: dict[str, Any], model_id: str, dimensions: int) -> dict[str, Any]:
+    """Builds a node's content properties plus embedding bookkeeping -- never the provenance set.
+
+    Provenance is mutated separately, atomically, in Neo4j itself (see `_add_ref_atomic`/
+    `_release_ref_atomic`): `upsert_nodes`'s own Cypher does `SET e += ...`, a merge, so it can
+    only ever add or overwrite keys, never clear one on a concurrent writer's behalf -- exactly
+    wrong for a value multiple documents contribute refs to independently.
+    """
     properties: dict[str, Any] = {_DISPLAY_NAME_PROPERTY: content["display_name"]}
     for key, value in content.items():
         if key in {"label", "display_name"}:
             continue
         properties[key] = value
-    properties[_PROVENANCE_REFS_PROPERTY] = sorted(refs)
     properties[_EMBEDDING_MODEL_PROPERTY] = model_id
     properties[_EMBEDDING_DIMENSIONS_PROPERTY] = dimensions
     return properties
 
 
-def _provenance_only_node(node_key: str, label: str, refs: frozenset[str]) -> EntityNode:
-    """Builds a bookkeeping-only upsert that touches a node's provenance set without touching its content."""
-    return EntityNode(name=node_key, label=label, properties={_PROVENANCE_REFS_PROPERTY: sorted(refs)})
+# Both provenance queries recompute the ref set from whatever is actually stored at the moment
+# they run, inside one Neo4j transaction each (`execute_query` auto-commits per call) -- never
+# from a Python-held snapshot. Two documents racing to touch the same auto-joined node therefore
+# each apply their own add/remove against the graph's current state, not against a stale read;
+# core.py's release_ref/plan_delta already proved the *rule* (remove one ref, the node dies only
+# when the set is empty) -- this is that same rule, just evaluated where the mutation actually
+# happens so it can't be lost to a lost update.
+_RELEASE_REF_QUERY = """
+    MATCH (n {id: $node_key})
+    WITH n, [x IN coalesce(n.provenance_refs, []) WHERE x <> $ref] AS remaining
+    SET n.provenance_refs = remaining
+    WITH n, remaining
+    WHERE size(remaining) = 0
+    DETACH DELETE n
+    """
+
+_ADD_REF_QUERY = """
+    MATCH (n {id: $node_key})
+    WITH n, [x IN coalesce(n.provenance_refs, []) WHERE x <> $ref_to_remove] AS without_old
+    WITH n, CASE WHEN $ref_to_add IN without_old THEN without_old ELSE without_old + $ref_to_add END AS refs
+    SET n.provenance_refs = refs
+    """
+
+# Dynamic property access (`n[$key]`) parameterizes the property *name*, not just its value --
+# property keys here can trace back to LLM-extracted entity properties (compiler.py's
+# `dict(node.properties)`), so they are not a fixed, trusted vocabulary. String-formatting a key
+# straight into `REMOVE n.<key>` would be a Cypher injection surface; this keeps every key bound.
+_REMOVE_STALE_PROPERTIES_QUERY = """
+    MATCH (n {id: $node_key})
+    UNWIND $stale_keys AS stale_key
+    REMOVE n[stale_key]
+    """
+
+
+def _release_ref_atomic(store: Neo4jPropertyGraphStore, node_key: str, ref: str) -> None:
+    """Atomically drops one provenance ref, deleting the node in the same query if it was the last."""
+    store.structured_query(_RELEASE_REF_QUERY, param_map={"node_key": node_key, "ref": ref})
+
+
+def _add_ref_atomic(
+    store: Neo4jPropertyGraphStore, node_key: str, ref_to_add: str, ref_to_remove: str | None
+) -> None:
+    """Atomically adds one provenance ref, optionally dropping another (a re-approval's old ref)."""
+    store.structured_query(
+        _ADD_REF_QUERY,
+        param_map={"node_key": node_key, "ref_to_add": ref_to_add, "ref_to_remove": ref_to_remove or ""},
+    )
+
+
+def _remove_stale_properties(store: Neo4jPropertyGraphStore, node_key: str, stale_keys: frozenset[str]) -> None:
+    """Clears properties the new content no longer carries -- `upsert_nodes`'s own SET += never would."""
+    if not stale_keys:
+        return
+    store.structured_query(
+        _REMOVE_STALE_PROPERTIES_QUERY, param_map={"node_key": node_key, "stale_keys": sorted(stale_keys)}
+    )
 
 
 def _apply_node_delta(
@@ -173,41 +229,45 @@ def _apply_node_delta(
             # Already released by an earlier attempt at this same persist (the worker crashed or
             # lost its lease between this Neo4j write and the Postgres bookkeeping that follows
             # it) -- retrying is expected to be a no-op here, not a second release (tracer-bullet-01
-            # "the Neo4j write... is self-correcting").
+            # "the Neo4j write... is self-correcting"). This is a snapshot-based pre-check only --
+            # the actual release below is still atomic against live state either way.
             return
-        remaining, should_delete = release_ref(old_refs, previous_content_hash)
-        if should_delete:
-            store.delete(ids=[delta.node_key])
-        else:
-            store.upsert_nodes([_provenance_only_node(delta.node_key, existing.label, remaining)])
+        _release_ref_atomic(store, delta.node_key, previous_content_hash)
         return
 
     # add/update/unchanged: plan_delta only ever emits these actions for a key it read out of
     # `current_content`, so `content` is always present here -- trust that contract.
     assert content is not None
 
-    old_refs = frozenset(existing.properties.get(_PROVENANCE_REFS_PROPERTY, [])) if existing else frozenset()
-    new_refs = old_refs
-    if is_previous_contribution and previous_content_hash is not None:
-        new_refs = new_refs - {previous_content_hash}
-    new_refs = new_refs | {content_hash}
+    ref_to_remove = previous_content_hash if is_previous_contribution else None
 
     if delta.action == "unchanged":
-        if new_refs == old_refs:
-            return  # true no-op: same content, same contributor -- nothing to write (A5).
-        store.upsert_nodes([_provenance_only_node(delta.node_key, content["label"], new_refs)])
+        old_refs = frozenset(existing.properties.get(_PROVENANCE_REFS_PROPERTY, [])) if existing else frozenset()
+        already_has_ref = content_hash in old_refs and (ref_to_remove is None or ref_to_remove not in old_refs)
+        if already_has_ref:
+            return  # true no-op: same content, same contributor -- nothing to write (A5). Snapshot-based
+            # fast path only; a redundant or (rarely) skipped write here never loses a ref, since
+            # the write itself, when it does happen, is the atomic query below either way.
+        _add_ref_atomic(store, delta.node_key, content_hash, ref_to_remove)
         return
 
-    # add or update: (re)write full content and (re)compute the embedding -- this is the only
-    # branch that spends an embedding call.
+    # add or update: (re)write content and (re)compute the embedding -- the only branch that
+    # spends an embedding call -- then reconcile the provenance ref and any properties the new
+    # content dropped, each as its own atomic step.
     embedding_text = _embedding_text(content["label"], content["display_name"])
     node = EntityNode(
         name=delta.node_key,
         label=content["label"],
-        properties=_node_properties(content, new_refs, model_id, dimensions),
+        properties=_node_properties(content, model_id, dimensions),
         embedding=embed(embedding_text),
     )
     store.upsert_nodes([node])
+
+    if existing is not None:
+        stale_keys = frozenset(_content_from_existing_node(existing)) - frozenset(content)
+        _remove_stale_properties(store, delta.node_key, stale_keys)
+
+    _add_ref_atomic(store, delta.node_key, content_hash, ref_to_remove)
 
 
 def _apply_relations(
