@@ -62,9 +62,10 @@ services:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
     volumes:
       - neo4j_data:/data
-    # ports:
-    #   - "127.0.0.1:7474:7474"
-    #   - "127.0.0.1:7687:7687"
+    ports:
+      # ponytail: host-published bolt until nuron-ai joins the `nuron` network (NU-005). HTTP
+      # browser UI (7474) stays commented out -- nothing here needs it.
+      - "127.0.0.1:7687:7687"
     networks:
       - nuron
     healthcheck:
