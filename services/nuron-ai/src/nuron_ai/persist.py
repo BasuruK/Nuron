@@ -79,6 +79,8 @@ def build_store_from_env() -> Neo4jPropertyGraphStore:
 
 def build_embedder_from_env() -> tuple[Embedder, str, int]:
     """Builds an OpenAI-compatible embedder from OPENAI_*/EMBEDDING_DIMENSIONS; returns it with the model id and dimension count ADR-0004 requires stamped on every node."""
+    # Guardrails suppressed: this client only embeds. Any text generation or summarization
+    # (planned) must go through a Guardrails-wrapped client -- generated output needs validation.
     client = OpenAI(base_url=os.environ["OPENAI_BASE_URL"], api_key=os.environ["OPENAI_API_KEY"])  # nosemgrep
     model = os.environ["OPENAI_EMBEDDING_MODEL"]
     dimensions = int(os.environ["EMBEDDING_DIMENSIONS"])
