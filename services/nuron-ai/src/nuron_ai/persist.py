@@ -64,6 +64,10 @@ _RESERVED_PROPERTIES = frozenset(
 )
 
 
+class EmbeddingConfigurationMismatchError(ValueError):
+    """An existing node's embedding model or dimension count differs from config -- terminal until a re-embedding migration (ADR-0004)."""
+
+
 def build_store_from_env() -> Neo4jPropertyGraphStore:
     """Connects to Neo4j via NEO4J_URI/NEO4J_PASSWORD -- community edition has exactly one user, `neo4j`."""
     return Neo4jPropertyGraphStore(
@@ -324,13 +328,13 @@ def persist_compiled_graph(
     for entity in existing_by_key.values():
         existing_model_id = entity.properties.get(_EMBEDDING_MODEL_PROPERTY)
         if existing_model_id is not None and existing_model_id != model_id:
-            raise ValueError(
+            raise EmbeddingConfigurationMismatchError(
                 f"node {entity.id!r} was embedded with model {existing_model_id!r}, not the "
                 f"configured {model_id!r} -- re-embedding is a migration, not a write (ADR-0004)"
             )
         existing_dimensions = entity.properties.get(_EMBEDDING_DIMENSIONS_PROPERTY)
         if existing_dimensions is not None and existing_dimensions != dimensions:
-            raise ValueError(
+            raise EmbeddingConfigurationMismatchError(
                 f"node {entity.id!r} was embedded at {existing_dimensions} dimensions, not the "
                 f"configured {dimensions} -- re-embedding is a migration, not a write (ADR-0004)"
             )
@@ -372,6 +376,8 @@ _RETRY_SET_SQL = sql.SQL(
 _RETRY_PARAMS: dict[str, Any] = {"retry_delay_seconds": _RETRY_DELAY_SECONDS, "max_attempts": _MAX_ATTEMPTS}
 
 _PERSISTED_SET_SQL = sql.SQL("state = 'persisted', attempt_count = 0, next_attempt_at = NULL")
+
+_FAILED_SET_SQL = sql.SQL("state = 'failed'")
 
 # Versions are numbered per original_filename, not per content_hash (review.py's approve():
 # "Version lineage follows original_filename... a re-ingested file lands under a new content_hash
@@ -460,6 +466,10 @@ def persist_pending(
             previous_node_keys=previous_node_keys,
             compiled_graph=compiled_graph,
         )
+    except EmbeddingConfigurationMismatchError as err:
+        logger.warning("persist failed permanently for %s (%s): %s", digest, original_filename, err)
+        db.release(conn, digest, worker_id, lease_token, _FAILED_SET_SQL, {})
+        return True
     except Exception as err:
         logger.warning("persist failed for %s (%s): %s", digest, original_filename, err)
         db.release(conn, digest, worker_id, lease_token, _RETRY_SET_SQL, _RETRY_PARAMS)

@@ -9,7 +9,7 @@ from llama_index.core.graph_stores.types import EntityNode
 
 from nuron_ai import persist
 from nuron_ai.core import natural_key
-from nuron_ai.persist import persist_compiled_graph, persist_pending
+from nuron_ai.persist import EmbeddingConfigurationMismatchError, persist_compiled_graph, persist_pending
 
 _MODEL_ID = "test-model"
 _DIMENSIONS = 3
@@ -360,7 +360,7 @@ def test_persist_rejects_a_node_embedded_with_a_different_model_id() -> None:
     store = MagicMock()
     store.get.return_value = [existing]
 
-    with pytest.raises(ValueError, match="golden-test-double-v1"):
+    with pytest.raises(EmbeddingConfigurationMismatchError, match="golden-test-double-v1"):
         _persist(
             store,
             content_hash="b" * 64,
@@ -380,7 +380,7 @@ def test_persist_rejects_a_node_embedded_at_a_different_dimension_count() -> Non
     store = MagicMock()
     store.get.return_value = [existing]
 
-    with pytest.raises(ValueError, match="1536"):
+    with pytest.raises(EmbeddingConfigurationMismatchError, match="1536"):
         _persist(
             store,
             content_hash="b" * 64,
@@ -596,3 +596,26 @@ def test_persist_pending_retries_when_the_compiled_graph_row_is_missing(
     assert any(record.levelname == "ERROR" and digest in record.message for record in caplog.records)
     release_call = conn.execute.call_args_list[-1]
     assert "attempt_count = attempt_count + 1" in str(release_call.args[0])
+
+
+def test_persist_pending_fails_terminally_on_an_embedding_configuration_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    digest = "b" * 64
+    compiled_graph = _graph([_node("ENTITY", "session store")])
+    conn = _make_conn(digest=digest, filename="b.md", compiled_graph=compiled_graph)
+    store = MagicMock()
+    store.get.return_value = [
+        _existing_entity(
+            "session store:ENTITY", "ENTITY", display_name="session store", refs=["a" * 64], dimensions=1536
+        )
+    ]
+
+    with caplog.at_level("WARNING"):
+        assert persist_pending(conn, store, _embed_that_must_not_run, _MODEL_ID, _DIMENSIONS, "worker-1") is True
+
+    release_sql = str(conn.execute.call_args_list[-1].args[0])
+    assert "state = 'failed'" in release_sql
+    assert "attempt_count" not in release_sql
+    assert any(record.levelname == "WARNING" and digest in record.message for record in caplog.records)
+    store.upsert_nodes.assert_not_called()
