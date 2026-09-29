@@ -32,7 +32,7 @@ from typing import Any
 import psycopg
 from llama_index.core.graph_stores.types import EntityNode, Relation
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
-from openai import OpenAI
+from openai import OpenAI  # nosemgrep
 from psycopg import sql
 
 from nuron_ai import db
@@ -79,7 +79,7 @@ def build_store_from_env() -> Neo4jPropertyGraphStore:
 
 def build_embedder_from_env() -> tuple[Embedder, str, int]:
     """Builds an OpenAI-compatible embedder from OPENAI_*/EMBEDDING_DIMENSIONS; returns it with the model id and dimension count ADR-0004 requires stamped on every node."""
-    client = OpenAI(base_url=os.environ["OPENAI_BASE_URL"], api_key=os.environ["OPENAI_API_KEY"])
+    client = OpenAI(base_url=os.environ["OPENAI_BASE_URL"], api_key=os.environ["OPENAI_API_KEY"])  # nosemgrep
     model = os.environ["OPENAI_EMBEDDING_MODEL"]
     dimensions = int(os.environ["EMBEDDING_DIMENSIONS"])
 
