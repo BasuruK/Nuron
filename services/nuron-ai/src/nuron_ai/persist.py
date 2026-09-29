@@ -391,6 +391,8 @@ _PREVIOUS_CONTENT_HASH_QUERY = """
     JOIN nuron_ai.documents d_prev ON d_prev.content_hash = rs_prev.content_hash
         AND d_prev.original_filename = d_current.original_filename
     WHERE rs_current.content_hash = %(content_hash)s
+    ORDER BY rs_current.version DESC
+    LIMIT 1
     """
 
 
