@@ -9,7 +9,12 @@ from llama_index.core.graph_stores.types import EntityNode
 
 from nuron_ai import persist
 from nuron_ai.core import natural_key
-from nuron_ai.persist import EmbeddingConfigurationMismatchError, persist_compiled_graph, persist_pending
+from nuron_ai.persist import (
+    EmbeddingConfigurationMismatchError,
+    merge_gate_pending,
+    persist_compiled_graph,
+    persist_pending,
+)
 
 _MODEL_ID = "test-model"
 _DIMENSIONS = 3
@@ -619,3 +624,26 @@ def test_persist_pending_fails_terminally_on_an_embedding_configuration_mismatch
     assert "attempt_count" not in release_sql
     assert any(record.levelname == "WARNING" and digest in record.message for record in caplog.records)
     store.upsert_nodes.assert_not_called()
+
+
+# -- merge_gate_pending: compiled -> awaiting_merge_confirm ----------------------
+
+
+def test_merge_gate_pending_returns_false_when_nothing_is_compiled() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = None
+
+    assert merge_gate_pending(conn, "worker-1") is False
+
+
+def test_merge_gate_pending_claims_compiled_and_releases_to_awaiting_merge_confirm() -> None:
+    conn = MagicMock(spec=psycopg.Connection)
+    conn.execute.return_value.fetchone.return_value = _claimed_row("c" * 64, "c.md")
+    conn.execute.return_value.rowcount = 1
+
+    assert merge_gate_pending(conn, "worker-1") is True
+
+    claim_call, release_call = conn.execute.call_args_list
+    assert claim_call.args[1]["state"] == "compiled"
+    assert "state = 'awaiting_merge_confirm'" in str(release_call.args[0])
+    assert release_call.args[1]["content_hash"] == "c" * 64

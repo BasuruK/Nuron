@@ -381,6 +381,24 @@ _PERSISTED_SET_SQL = sql.SQL("state = 'persisted', attempt_count = 0, next_attem
 
 _FAILED_SET_SQL = sql.SQL("state = 'failed'")
 
+_AWAITING_MERGE_CONFIRM_SET_SQL = sql.SQL(
+    "state = 'awaiting_merge_confirm', attempt_count = 0, next_attempt_at = NULL"
+)
+
+
+def merge_gate_pending(conn: psycopg.Connection, worker_id: str) -> bool:
+    """Claims one compiled row and advances it to awaiting_merge_confirm."""
+    # ponytail: no merge-candidate detection exists yet (NU-010), so every compiled row is an
+    # auto-join needing no human confirmation (CONTEXT.md "Auto-join") and passes straight
+    # through. NU-010 replaces this pass-through: rows with candidates stay blocked here.
+    claimed = db.claim(conn, worker_id, "compiled", lease_seconds=_LEASE_SECONDS)
+    if claimed is None:
+        return False
+
+    digest, *_rest, lease_token = claimed
+    db.release(conn, digest, worker_id, lease_token, _AWAITING_MERGE_CONFIRM_SET_SQL, {})
+    return True
+
 # Versions are numbered per original_filename, not per content_hash (review.py's approve():
 # "Version lineage follows original_filename... a re-ingested file lands under a new content_hash
 # every time"). rs_current.version - 1 is therefore the row this content_hash's own prior
@@ -407,11 +425,9 @@ def persist_pending(
     worker_id: str,
 ) -> bool:
     """Claims one awaiting_merge_confirm row and persists its compiled graph to Neo4j."""
-    # ponytail: claims unconditionally -- NU-010 (not yet built) owns detecting real merge
-    # candidates and actually blocking this state for a human; today nothing populates
-    # candidates, so every row here is an auto-join needing no confirmation (CONTEXT.md
-    # "Auto-join"). Once NU-010 lands, either it must gate ahead of this claim, or persist needs
-    # its own post-confirmation state instead of claiming awaiting_merge_confirm directly.
+    # ponytail: claims unconditionally -- rows only reach awaiting_merge_confirm via
+    # merge_gate_pending, which is where NU-010's real merge-candidate blocking must land. Until
+    # a human-confirm path exists, every row here is an auto-join (CONTEXT.md "Auto-join").
     claimed = db.claim(conn, worker_id, "awaiting_merge_confirm", lease_seconds=_LEASE_SECONDS)
     if claimed is None:
         return False
@@ -500,7 +516,7 @@ def persist_pending(
 
 
 def main() -> None:
-    """Runs the Persist worker forever, polling for awaiting_merge_confirm rows."""
+    """Runs the Persist worker forever: gates compiled rows, then persists awaiting_merge_confirm rows."""
     logging.basicConfig(level=logging.INFO)
     worker_id = uuid.uuid4().hex
     store = build_store_from_env()
@@ -510,7 +526,9 @@ def main() -> None:
         try:
             with db.from_env() as conn:
                 while True:
-                    if not persist_pending(conn, store, embed, model_id, dimensions, worker_id):
+                    gated = merge_gate_pending(conn, worker_id)
+                    persisted = persist_pending(conn, store, embed, model_id, dimensions, worker_id)
+                    if not (gated or persisted):
                         time.sleep(_POLL_DELAY_SECONDS)
         except Exception:
             logger.exception(
