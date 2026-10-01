@@ -1059,6 +1059,19 @@ wheels = [
 ]
 
 [[package]]
+name = "llama-index-graph-stores-neo4j"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "llama-index-core" },
+    { name = "neo4j" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6e/be/9c3a82e05277e2e53977af975be4b5da256d3925e092cc928432ecbc3400/llama_index_graph_stores_neo4j-0.8.0.tar.gz", hash = "sha256:4046b32ffd09fe6cc9c385ef1193aa9ba41aba369dc358abb835b5a3a3e1e7c0", size = 17380, upload-time = "2026-08-31T15:54:08.754Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/bf/65762164a0b9b06627145b22fa5ba5eb9bfd2598ff2d3b33eff6d0dbf3c6/llama_index_graph_stores_neo4j-0.8.0-py3-none-any.whl", hash = "sha256:367aaab7296f684f5354e22bc837307293b7581b23f83fb3abc8ef9ed8681ab2", size = 18589, upload-time = "2026-08-31T15:54:07.959Z" },
+]
+
+[[package]]
 name = "llama-index-instrumentation"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1349,6 +1362,18 @@ wheels = [
 ]
 
 [[package]]
+name = "neo4j"
+version = "5.28.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/77/ea/a17b0df723422cb3124bd45e6570d9677eafa38ffa207c3d12f601cbb90e/neo4j-5.28.6.tar.gz", hash = "sha256:224020cb649517cba1b76bf94129ccf84de30e7005932b5ab0cdd9cb566d55b2", size = 233391, upload-time = "2026-09-15T08:47:07.57Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/9c/ec2a2f4b9fbb6c93d51c785a8c4e4cdca280009b7ad0821ff145e6cb02a5/neo4j-5.28.6-py3-none-any.whl", hash = "sha256:5454b51e0a1de870e7d0cc233b8897bb8b3a273fe32458ccbcde9d5a604f7437", size = 313892, upload-time = "2026-09-15T08:47:04.604Z" },
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1464,6 +1489,7 @@ dependencies = [
     { name = "fsspec" },
     { name = "llama-cloud" },
     { name = "llama-index-core" },
+    { name = "llama-index-graph-stores-neo4j" },
     { name = "llama-index-llms-openai-like" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"] },
@@ -1482,6 +1508,7 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2026.7.0" },
     { name = "llama-cloud", specifier = ">=1.0" },
     { name = "llama-index-core", specifier = "==0.14.23" },
+    { name = "llama-index-graph-stores-neo4j", specifier = "==0.8.0" },
     { name = "llama-index-llms-openai-like", specifier = "==0.8.0" },
     { name = "openai", specifier = ">=2.54.0,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.5" },
@@ -1897,6 +1924,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
+name = "pytz"
+version = "2026.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/ed/fa23d28713004418bbf2407127f80f385bfb0bf4e677bef02c25c27b00ee/pytz-2026.4.tar.gz", hash = "sha256:464303645bafafd72418898368b2429458f709cf1eb6a15372fbcc396b64da63", size = 318444, upload-time = "2026-09-24T03:58:40.443Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/11/e3df59614bebe0ca50c905442603eda64ae7ac19811d4e4f74aa2d51ca85/pytz-2026.4-py2.py3-none-any.whl", hash = "sha256:9d514388fbc89ca0833203464272ac485b8828568ab73532f5020f17e892a0ff", size = 506747, upload-time = "2026-09-24T03:58:38.629Z" },
 ]
 
 [[package]]
