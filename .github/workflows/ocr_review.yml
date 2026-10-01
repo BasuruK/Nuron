@@ -13,6 +13,13 @@ jobs:
   code-review:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Without this the ocr launcher spawns a detached self-updater on its
+      # first invocation. It sees a newer release on npm and runs `npm i -g`,
+      # which unlinks /usr/local/bin/ocr mid-run; a concurrent `ocr config set`
+      # then dies with MODULE_NOT_FOUND. The version pin below is meaningless
+      # while the updater is allowed to replace it.
+      OCR_NO_UPDATE: "1"
     # Concurrency is chosen before this job's if. A flat ocr-<pr> group lets a
     # rejected comment cancel a live review. Only an authorized run joins that
     # group; everything else gets a group unique to this run.
@@ -107,10 +114,10 @@ jobs:
             exit 1
           fi
 
-      - uses: alibaba/open-code-review@bccbc15f785269400735d5255540c231e6c02b6d # v1.12.9
+      - uses: alibaba/open-code-review@a758d9cbfb689937c7857ad64b2dd66adb58c0c2 # v1.12.11
         with:
           github_token: ${{ steps.app-token.outputs.token }}
-          ocr_version: "1.12.9"
+          ocr_version: "1.12.11"
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
           head_sha: ${{ steps.pr-context.outputs.head_sha }}
           llm_url: ${{ secrets.OCR_LLM_URL }}
